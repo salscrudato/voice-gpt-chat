@@ -1,0 +1,116 @@
+.input-wrapper {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-sm);
+}
+
+.input-full-width {
+  width: 100%;
+}
+
+.input-label {
+  font-weight: 700;
+  font-size: 0.8125rem;
+  color: var(--color-text-primary);
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+}
+
+.input-required {
+  color: var(--color-error);
+  margin-left: 0.25rem;
+}
+
+.input-container {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.input-icon {
+  position: absolute;
+  left: var(--spacing-md);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--color-text-secondary);
+  pointer-events: none;
+}
+
+.input,
+.textarea {
+  width: 100%;
+  padding: 0.875rem 1.125rem;
+  font-family: var(--font-family-base);
+  font-size: 0.9375rem;
+  border: 1.5px solid var(--color-border);
+  border-radius: 0.875rem;
+  background-color: var(--color-bg-primary);
+  color: var(--color-text-primary);
+  transition: all var(--transition-base);
+  font-weight: 400;
+  letter-spacing: -0.2px;
+  box-shadow: 0 2px 4px rgba(91, 91, 255, 0.04);
+}
+
+.input:focus,
+.textarea:focus {
+  outline: none;
+  border-color: var(--color-primary);
+  box-shadow: 0 0 0 3px rgba(91, 91, 255, 0.1), 0 2px 8px rgba(91, 91, 255, 0.08);
+  background-color: var(--color-secondary-light);
+}
+
+.input:disabled,
+.textarea:disabled {
+  background-color: var(--color-bg-secondary);
+  cursor: not-allowed;
+  opacity: 0.7;
+}
+
+.input::placeholder,
+.textarea::placeholder {
+  color: var(--color-text-tertiary);
+}
+
+.input-with-icon {
+  padding-left: 2.5rem;
+}
+
+.input-error {
+  border-color: var(--color-error);
+  animation: wiggle 0.3s ease-in-out;
+}
+
+.input-error:focus {
+  box-shadow: 0 0 0 3px rgba(239, 68, 68, 0.1), 0 2px 8px rgba(239, 68, 68, 0.08);
+}
+
+.input-error-text {
+  font-size: var(--font-size-sm);
+  color: var(--color-error);
+  animation: slideInWithFade var(--transition-base);
+}
+
+@keyframes wiggle {
+  0%, 100% {
+    transform: translateX(0);
+  }
+  25% {
+    transform: translateX(-4px);
+  }
+  75% {
+    transform: translateX(4px);
+  }
+}
+
+.input-helper-text {
+  font-size: var(--font-size-sm);
+  color: var(--color-text-secondary);
+}
+
+.textarea {
+  resize: vertical;
+  min-height: 100px;
+}
+

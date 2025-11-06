@@ -1,0 +1,132 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{db}/documents {
+    // ============ HELPER FUNCTIONS ============
+
+    // Validate user ID format
+    function isValidUserId(uid) {
+      return uid is string && uid.size() > 0 && uid.size() <= 256;
+    }
+
+    // Validate memo ID format (UUID)
+    function isValidMemoId(id) {
+      return id.matches('^[0-9a-f\\-]{36}$');
+    }
+
+    // Validate string length
+    function isValidString(str, minLen, maxLen) {
+      return str is string && str.size() >= minLen && str.size() <= maxLen;
+    }
+
+    // Validate array length
+    function isValidArray(arr, maxLen) {
+      return arr is list && arr.size() <= maxLen;
+    }
+
+    // Validate timestamp
+    function isValidTimestamp(ts) {
+      return ts is timestamp;
+    }
+
+    // Rate limiting check
+    function rateLimitCheck(field, limit, window) {
+      return request.time < resource.data[field] + duration.value(window, 's');
+    }
+
+    // Check if user is owner
+    function isOwner(uid) {
+      return request.auth != null && request.auth.uid == uid;
+    }
+
+    // Validate memo data structure
+    function isValidMemoData() {
+      let data = request.resource.data;
+      return data.size() < 10000 &&
+             data.keys().hasAll(['memoId', 'userName', 'createdAt']) &&
+             isValidString(data.transcript, 0, 50000) && // Allow empty transcript initially
+             isValidString(data.userName, 1, 100) &&
+             isValidTimestamp(data.createdAt) &&
+             (!data.keys().hasAny(['tags']) || isValidArray(data.tags, 20)) &&
+             (!data.keys().hasAny(['status']) || data.status in ['pending', 'transcribing', 'transcribed', 'embedding', 'indexed', 'error']) &&
+             (!data.keys().hasAny(['wordCount']) || data.wordCount is int) &&
+             (!data.keys().hasAny(['qualityScore']) || (data.qualityScore is int && data.qualityScore >= 0 && data.qualityScore <= 100));
+    }
+
+    // Validate chat message
+    function isValidChatMessage(msg) {
+      return msg is map &&
+             msg.keys().hasAll(['role', 'content']) &&
+             msg.role in ['user', 'assistant'] &&
+             isValidString(msg.content, 1, 10000) &&
+             (!msg.keys().hasAny(['citations']) || msg.citations is list);
+    }
+
+    // Validate chat session data
+    function isValidChatSessionData() {
+      let data = request.resource.data;
+      return data.size() < 50000 &&
+             data.keys().hasAll(['title', 'createdAt', 'updatedAt']) &&
+             isValidString(data.title, 1, 200) &&
+             isValidTimestamp(data.createdAt) &&
+             isValidTimestamp(data.updatedAt) &&
+             (!data.keys().hasAny(['messages']) || isValidArray(data.messages, 1000));
+    }
+
+    // Rate limiting helper
+    function checkRateLimit(field, maxOps, windowSeconds) {
+      return !resource.data.keys().hasAny([field]) ||
+             request.time >= resource.data[field] + duration.value(windowSeconds, 's');
+    }
+
+    // ============ PER-USER DATA ============
+    match /users/{uid} {
+      allow read: if isValidUserId(uid);
+      allow write: if isValidUserId(uid) && request.resource.data.size() < 1000;
+
+      // ============ MEMOS COLLECTION ============
+      match /memos/{memoId} {
+        allow read: if isValidUserId(uid);
+        allow create: if isValidUserId(uid) &&
+                        isValidMemoId(memoId) &&
+                        isValidMemoData();
+        allow update: if isValidUserId(uid) &&
+                        isValidMemoId(memoId) &&
+                        request.resource.data.size() < 10000;
+        allow delete: if isValidUserId(uid) && isValidMemoId(memoId);
+      }
+
+      // ============ CHUNKS COLLECTION ============
+      // Vector embeddings stored here and indexed for RAG
+      // Written by backend only; readable by owner
+      match /chunks/{chunkId} {
+        allow read: if isValidUserId(uid);
+        allow write: if false;
+      }
+
+      // ============ CHAT SESSIONS COLLECTION ============
+      match /chatSessions/{sessionId} {
+        allow read: if isValidUserId(uid);
+        allow create: if isValidUserId(uid) &&
+                        isValidChatSessionData();
+        allow update: if isValidUserId(uid) &&
+                        isValidChatSessionData();
+        allow delete: if isValidUserId(uid);
+
+        // Chat messages subcollection
+        match /messages/{messageId} {
+          allow read: if isValidUserId(uid);
+          allow create: if isValidUserId(uid) &&
+                          isValidChatMessage(request.resource.data) &&
+                          isValidTimestamp(request.resource.data.createdAt);
+          allow delete: if isValidUserId(uid);
+        }
+      }
+    }
+
+    // ============ DENY ALL OTHER ACCESS ============
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

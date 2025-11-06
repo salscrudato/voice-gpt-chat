@@ -1,0 +1,1 @@
+import{i as a,g as t,a as s}from"./firebase-DshfhSii.js";const o={apiKey:"AIzaSyBVXRPB_fNCOKJmzsEU0VktPZCB_1fx8wg",authDomain:"voice-gpt-chat.firebaseapp.com",projectId:"voice-gpt-chat",storageBucket:"voice-gpt-chat.firebasestorage.app",messagingSenderId:"653896399291",appId:"1:653896399291:web:7722f00ce7a5961c976c9e"},e=a(o),p=t(e),c=s(e);export{p as d,c as s};

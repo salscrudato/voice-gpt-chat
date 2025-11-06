@@ -1,0 +1,31 @@
+{
+  "name": "voice-gpt-chat",
+  "version": "1.0.0",
+  "description": "VoiceGPT - Voice memo chat with RAG",
+  "private": true,
+  "workspaces": [
+    "web",
+    "functions",
+    "services/chat-api"
+  ],
+  "scripts": {
+    "dev": "cd web && npm run dev",
+    "dev:all": "concurrently \"npm run dev:web\" \"npm run dev:functions\"",
+    "dev:web": "cd web && npm run dev",
+    "dev:functions": "cd functions && npm run serve",
+    "build": "npm run build -w web && npm run build -w functions && npm run build -w services/chat-api",
+    "build:web": "cd web && npm run build",
+    "build:functions": "cd functions && npm run build",
+    "build:chat-api": "cd services/chat-api && npm run build",
+    "deploy": "firebase deploy",
+    "deploy:functions": "firebase deploy --only functions",
+    "deploy:hosting": "firebase deploy --only hosting",
+    "deploy:rules": "firebase deploy --only firestore:rules,storage",
+    "lint": "npm run lint -w web && npm run lint -w functions",
+    "logs": "firebase functions:log"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2"
+  }
+}
+

@@ -1,0 +1,168 @@
+/**
+ * Loading Spinner Styles
+ */
+
+.spinner {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.spinner-ring {
+  display: inline-block;
+  position: relative;
+  width: 80px;
+  height: 80px;
+}
+
+.spinner-ring::after {
+  content: " ";
+  display: block;
+  border-radius: 50%;
+  width: 64px;
+  height: 64px;
+  margin: 8px;
+  border: 6px solid currentColor;
+  border-color: currentColor transparent currentColor transparent;
+  animation: spinner-ring 1.2s cubic-bezier(0.5, 0, 0.5, 1) infinite;
+  filter: drop-shadow(0 4px 12px rgba(91, 91, 255, 0.25));
+}
+
+@keyframes spinner-ring {
+  0% {
+    transform: rotate(0deg);
+  }
+  100% {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes spinner-pulse {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.5;
+  }
+}
+
+/* Size variants */
+.spinner-sm .spinner-ring {
+  width: 40px;
+  height: 40px;
+}
+
+.spinner-sm .spinner-ring::after {
+  width: 32px;
+  height: 32px;
+  margin: 4px;
+  border-width: 3px;
+}
+
+.spinner-md .spinner-ring {
+  width: 60px;
+  height: 60px;
+}
+
+.spinner-md .spinner-ring::after {
+  width: 48px;
+  height: 48px;
+  margin: 6px;
+  border-width: 4px;
+}
+
+.spinner-lg .spinner-ring {
+  width: 80px;
+  height: 80px;
+}
+
+.spinner-lg .spinner-ring::after {
+  width: 64px;
+  height: 64px;
+  margin: 8px;
+  border-width: 6px;
+}
+
+/* Color variants */
+.spinner-primary {
+  color: var(--color-primary);
+}
+
+.spinner-secondary {
+  color: var(--color-secondary);
+}
+
+.spinner-success {
+  color: var(--color-success);
+}
+
+.spinner-error {
+  color: var(--color-error);
+}
+
+.spinner-info {
+  color: var(--color-info);
+}
+
+/* Label */
+.spinner-label {
+  margin: 0;
+  font-size: 0.875rem;
+  color: var(--color-text-secondary);
+  font-weight: 600;
+  letter-spacing: -0.2px;
+}
+
+/* Full screen overlay */
+.spinner-fullscreen {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: var(--z-modal);
+  animation: fadeIn var(--transition-base);
+}
+
+.spinner-overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-color: rgba(0, 0, 0, 0.5);
+  backdrop-filter: blur(6px);
+  z-index: -1;
+}
+
+/* Skeleton loader */
+.skeleton {
+  background: linear-gradient(
+    90deg,
+    var(--color-bg-secondary) 25%,
+    var(--color-bg-tertiary) 50%,
+    var(--color-bg-secondary) 75%
+  );
+  background-size: 1000px 100%;
+  animation: shimmer 2s infinite;
+  border-radius: var(--radius-md);
+}
+
+.skeleton-circle {
+  border-radius: 50%;
+}
+
+@keyframes shimmer {
+  0% {
+    background-position: -1000px 0;
+  }
+  100% {
+    background-position: 1000px 0;
+  }
+}
+
