@@ -13,7 +13,7 @@ export interface ValidationResult {
 export function validateAudioFile(file: Blob): ValidationResult {
   const MAX_SIZE = 50 * 1024 * 1024; // 50 MB
   const MIN_SIZE = 1024; // 1 KB minimum
-  const ALLOWED_TYPES = ["audio/webm", "audio/mp3", "audio/wav", "audio/m4a"];
+  const ALLOWED_TYPES = ["audio/webm", "audio/mp3", "audio/wav", "audio/m4a", "audio/mp4"];
 
   if (file.size < MIN_SIZE) {
     return {

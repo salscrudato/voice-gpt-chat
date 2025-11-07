@@ -98,6 +98,64 @@ async function retryWithBackoff<T>(
   throw lastError || new Error("Max retries exceeded");
 }
 
+/**
+ * Extract key terms from text for hybrid search
+ * Simple TF-IDF-like approach: extract nouns and important words
+ * @param {string} text - The text to extract terms from
+ * @param {number} maxTerms - Maximum number of terms to extract
+ * @return {string[]} Array of extracted terms
+ */
+function extractTerms(text: string, maxTerms = 20): string[] {
+  // Simple stopwords list
+  const stopwords = new Set([
+    "the", "a", "an", "and", "or", "but", "in", "on", "at", "to", "for",
+    "of", "with", "by", "from", "is", "are", "was", "were", "be", "been",
+    "being", "have", "has", "had", "do", "does", "did", "will", "would",
+    "could", "should", "may", "might", "must", "can", "this", "that",
+    "these", "those", "i", "you", "he", "she", "it", "we", "they",
+  ]);
+
+  // Split into words and filter
+  const words = text
+    .toLowerCase()
+    .split(/\W+/)
+    .filter((w) => w.length > 3 && !stopwords.has(w));
+
+  // Count frequency
+  const freq = new Map<string, number>();
+  words.forEach((w) => freq.set(w, (freq.get(w) || 0) + 1));
+
+  // Sort by frequency and return top terms
+  return Array.from(freq.entries())
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, maxTerms)
+    .map(([term]) => term);
+}
+
+/**
+ * Generate a summary from text
+ * Simple approach: extract first 2-3 sentences
+ * @param {string} text - The text to summarize
+ * @param {number} maxLength - Maximum length of summary
+ * @return {string} Generated summary
+ */
+function generateSummary(text: string, maxLength = 200): string {
+  // Split into sentences
+  const sentences = text.split(/[.!?]+/).filter((s) => s.trim().length > 0);
+
+  let summary = "";
+  for (const sentence of sentences) {
+    const trimmed = sentence.trim();
+    if (summary.length + trimmed.length + 2 <= maxLength) {
+      summary += (summary ? " " : "") + trimmed + ".";
+    } else {
+      break;
+    }
+  }
+
+  return summary || text.substring(0, maxLength);
+}
+
 // ---------- 1) Transcribe on audio upload ----------
 export const onAudioUpload = onObjectFinalized(
   {
@@ -168,16 +226,32 @@ export const onAudioUpload = onObjectFinalized(
       });
       const startTime = Date.now();
 
+      // Determine audio duration from metadata to choose appropriate model
+      // Short audio (≤60s) uses latest_short for speed, longer uses latest_long
+      const audioSizeBytes = file.size || 0;
+      // Rough estimate: 16kHz, 16-bit
+      const estimatedDurationSeconds = Math.ceil(audioSizeBytes / (16000 * 2));
+      const useShortModel = estimatedDurationSeconds <= 60;
+
+      logger.info("Audio model selection:", {
+        uid,
+        memoId,
+        estimatedDurationSeconds,
+        useShortModel,
+      });
+
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const request: any = {
         recognizer,
         config: {
           autoDecodingConfig: {},
+          // TODO: Make configurable from user profile
           languageCodes: ["en-US"],
           features: {
-            enableWordTimeOffsets: false, // Disable for faster processing
+            // Enable for longer audio to support future diarization
+            enableWordTimeOffsets: !useShortModel,
           },
-          model: "latest_short", // Use faster model for quicker results
+          model: useShortModel ? "latest_short" : "latest_long",
         },
         recognitionOutputConfig: {
           inlineResponseConfig: {},
@@ -219,11 +293,12 @@ export const onAudioUpload = onObjectFinalized(
       const resp = response as any;
 
       // Log full response for debugging
+      const respStr = JSON.stringify(resp) || "undefined";
       logger.info("Full Speech-to-Text response:", {
         uid,
         memoId,
         responseKeys: Object.keys(resp).slice(0, 10),
-        responseStr: JSON.stringify(resp).substring(0, 500),
+        responseStr: respStr.substring(0, 500),
       });
 
       // Log response structure for debugging
@@ -272,10 +347,9 @@ export const onAudioUpload = onObjectFinalized(
       }
 
       if (!transcriptResults || transcriptResults.length === 0) {
-        const fileResultsStr = JSON.stringify(fileResults, null, 2).substring(
-          0,
-          500
-        );
+        const fileResultsJson = JSON.stringify(fileResults, null, 2) ||
+          "undefined";
+        const fileResultsStr = fileResultsJson.substring(0, 500);
         const msg = `No transcript results. FileResults: ${fileResultsStr}`;
         logger.error(msg);
         throw new Error(`No transcript results found for ${gcsUri}`);
@@ -337,6 +411,10 @@ export const onAudioUpload = onObjectFinalized(
         Math.max(0, Math.min(100, confidence * 100))
       );
 
+      // Generate summary and extract terms
+      const summary = generateSummary(transcript);
+      const terms = extractTerms(transcript);
+
       await retryWithBackoff(
         () => docRef.set(
           {
@@ -351,6 +429,9 @@ export const onAudioUpload = onObjectFinalized(
             confidence,
             qualityScore,
             transcribedAt: admin.firestore.FieldValue.serverTimestamp(),
+            language: "en-US", // Detected language
+            summary, // Short extract for list previews
+            terms, // Keywords for hybrid search
           },
           {merge: true}
         ),
@@ -520,6 +601,13 @@ export const onTranscriptWrite = onDocumentWritten(
           const ref = chunksColl.doc(`${memoId}_${i}`);
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           const fsAny = admin.firestore as any;
+
+          // Approximate token count: ~4 characters per token (rough estimate)
+          const tokenCount = Math.ceil(text.length / 4);
+
+          // Extract terms for this chunk for hybrid search
+          const chunkTerms = extractTerms(text, 10);
+
           batch.set(ref, {
             uid,
             memoId,
@@ -527,6 +615,9 @@ export const onTranscriptWrite = onDocumentWritten(
             chunkIndex: i,
             text,
             embedding: fsAny.FieldValue.vector(vectors[i]),
+            tokenCount, // For retriever budgeting
+            terms: chunkTerms, // Keywords for hybrid search fallback
+            memoDeleted: false, // Denormalized flag for filtering deleted memos
             createdAt: admin.firestore.FieldValue.serverTimestamp(),
           });
         }
@@ -560,6 +651,112 @@ export const onTranscriptWrite = onDocumentWritten(
       });
     } catch (error) {
       logger.error("Error in onTranscriptWrite:", error);
+      throw error;
+    }
+  }
+);
+
+// ---------- 3) Delete memo with cascade (HTTPS callable) ----------
+// Deletes a memo and all associated data: Storage audio, Firestore memo doc,
+// and chunk docs
+import {onCall} from "firebase-functions/v2/https";
+
+export const deleteMemo = onCall(
+  {
+    memory: "512MiB",
+    timeoutSeconds: 60,
+  },
+  async (request) => {
+    const {memoId} = request.data as {memoId: string};
+    const uid = request.auth?.uid;
+
+    if (!uid) {
+      throw new Error("Unauthenticated: User must be logged in");
+    }
+
+    if (!memoId || typeof memoId !== "string") {
+      throw new Error("Invalid memoId");
+    }
+
+    logger.info("Starting memo deletion:", {uid, memoId});
+
+    try {
+      const db = admin.firestore();
+      const storage = admin.storage();
+      let deletedChunks = 0;
+
+      // 1) Delete Storage audio file
+      try {
+        const audioPath = `audio/${uid}/${memoId}.webm`;
+        const bucket = storage.bucket();
+        await bucket.file(audioPath).delete().catch(() => {
+          // File may not exist, that's ok
+          logger.warn(
+            "Audio file not found or already deleted:",
+            {uid, memoId, audioPath}
+          );
+        });
+        logger.info("Storage audio deleted:", {uid, memoId});
+      } catch (storageError) {
+        logger.warn("Error deleting storage file:", storageError);
+        // Continue with deletion even if storage fails
+      }
+
+      // 2) Delete Firestore memo document
+      const memoRef = db
+        .collection("users")
+        .doc(uid)
+        .collection("memos")
+        .doc(memoId);
+      await memoRef.delete();
+      logger.info("Memo document deleted:", {uid, memoId});
+
+      // 3) Delete all chunk documents for this memo
+      const chunksRef = db.collection("users").doc(uid).collection("chunks");
+      const chunksQuery = chunksRef.where("memoId", "==", memoId);
+      const chunksSnap = await chunksQuery.get();
+
+      const batch = db.batch();
+      chunksSnap.docs.forEach((doc) => {
+        batch.delete(doc.ref);
+        deletedChunks++;
+      });
+
+      if (deletedChunks > 0) {
+        await batch.commit();
+        logger.info("Chunk documents deleted:", {uid, memoId, deletedChunks});
+      }
+
+      // 4) Optional: Write tombstone for race condition prevention
+      // (Useful if multiple deletes are in flight)
+      const tombstoneRef = db
+        .collection("users")
+        .doc(uid)
+        .collection("deletedMemos")
+        .doc(memoId);
+      await tombstoneRef.set({
+        deletedAt: admin.firestore.FieldValue.serverTimestamp(),
+        deletedChunks,
+      });
+
+      logger.info("Memo deletion completed successfully:", {
+        uid,
+        memoId,
+        deletedChunks,
+      });
+
+      return {
+        ok: true,
+        deletedChunks,
+        deletedStorage: true,
+      };
+    } catch (error) {
+      const errorMsg = error instanceof Error ? error.message : String(error);
+      logger.error("Error in deleteMemo:", {
+        uid,
+        memoId,
+        error: errorMsg,
+      });
       throw error;
     }
   }

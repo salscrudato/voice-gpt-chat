@@ -1,9 +1,10 @@
 import {useRef, useState, useEffect} from "react";
 import {db, storage} from "../firebase";
-import {collection, serverTimestamp, query, where, getDocs, orderBy, doc, updateDoc, setDoc, getDoc, deleteDoc} from "firebase/firestore";
+import {collection, serverTimestamp, query, where, getDocs, orderBy, doc, updateDoc, setDoc, getDoc, onSnapshot} from "firebase/firestore";
 import {ref, uploadBytes} from "firebase/storage";
+import {getFunctions, httpsCallable} from "firebase/functions";
 import {MdMic, MdStop, MdBook, MdClose, MdDelete, MdCheckCircle, MdError} from "react-icons/md";
-import {getUserId} from "../utils/userManager";
+import {getUserUid} from "../utils/authManager";
 import {validateAudioFile} from "../utils/validation";
 import {generateMemoInsight} from "../services/insightService";
 import {Button, Card, Badge, Modal} from "./index";
@@ -37,20 +38,21 @@ export default function UploadRecorder({userName}: UploadRecorderProps) {
   const chunksRef = useRef<Blob[]>([]);
 
   // Load memos from Firestore
-  const loadMemos = async () => {
+  const loadMemos = () => {
     try {
       setLoadingMemos(true);
-      const uid = getUserId();
-      if (!uid) return;
+      const uid = getUserUid();
+      if (!uid) {
+        setLoadingMemos(false);
+        return;
+      }
 
       const memosRef = collection(db, "users", uid, "memos");
       const q = query(memosRef, orderBy("createdAt", "desc"));
-      const snapshot = await getDocs(q);
 
-      // Filter out deleted memos on the client side
-      const loadedMemos: MemoItem[] = snapshot.docs
-        .filter((doc) => !doc.data().isDeleted)
-        .map((doc) => ({
+      // Use onSnapshot for real-time updates
+      const unsubscribe = onSnapshot(q, (snapshot) => {
+        const loadedMemos: MemoItem[] = snapshot.docs.map((doc) => ({
           id: doc.id,
           memoId: doc.data().memoId,
           userName: doc.data().userName,
@@ -61,16 +63,27 @@ export default function UploadRecorder({userName}: UploadRecorderProps) {
           status: doc.data().status || "pending",
         }));
 
-      setMemos(loadedMemos);
+        setMemos(loadedMemos);
+        setLoadingMemos(false);
+      }, (error) => {
+        console.error("Failed to load memos:", error);
+        setLoadingMemos(false);
+      });
+
+      return unsubscribe;
     } catch (error) {
       console.error("Failed to load memos:", error);
-    } finally {
       setLoadingMemos(false);
     }
   };
 
   useEffect(() => {
-    loadMemos();
+    const unsubscribe = loadMemos();
+    return () => {
+      if (unsubscribe) {
+        unsubscribe();
+      }
+    };
   }, []);
 
   const startRecording = async () => {
@@ -154,9 +167,9 @@ export default function UploadRecorder({userName}: UploadRecorderProps) {
       console.log("Audio validation passed");
 
       // Get user ID
-      const uid = getUserId();
+      const uid = getUserUid();
       if (!uid) {
-        setMessage({type: "error", text: "User ID not found"});
+        setMessage({type: "error", text: "User not authenticated"});
         setUploading(false);
         return;
       }
@@ -332,22 +345,19 @@ export default function UploadRecorder({userName}: UploadRecorderProps) {
 
   const deleteMemo = async (memo: MemoItem) => {
     try {
-      const uid = getUserId();
+      const uid = getUserUid();
       if (!uid) {
-        setMessage({type: "error", text: "User ID not found"});
+        setMessage({type: "error", text: "User not authenticated"});
         return;
       }
 
-      // Use memoId as the document ID for deletion
-      const memoRef = doc(db, "users", uid, "memos", memo.memoId);
-
-      // Perform hard delete - completely remove the document from Firestore
-      await deleteDoc(memoRef);
+      const functions = getFunctions();
+      const deleteMemoCaller = httpsCallable(functions, "deleteMemo");
+      await deleteMemoCaller({memoId: memo.memoId});
 
       // Remove from local state
-      setMemos(memos.filter((m) => m.memoId !== memo.memoId));
+      setMemos(memos.filter((m) => m.id !== memo.id));
       setMessage({type: "success", text: "Memo deleted successfully"});
-      console.log("Memo hard deleted:", memo.memoId);
     } catch (error) {
       console.error("Failed to delete memo:", error);
       setMessage({type: "error", text: "Failed to delete memo"});

@@ -2,9 +2,10 @@
   background-color: var(--color-bg-primary);
   border: 1px solid var(--color-border);
   border-radius: 1.125rem;
-  box-shadow: 0 2px 8px rgba(91, 91, 255, 0.06);
+  box-shadow: var(--shadow-xs);
   transition: all var(--transition-base);
   overflow: hidden;
+  backdrop-filter: blur(10px);
 }
 
 .card-hoverable {
@@ -12,14 +13,14 @@
 }
 
 .card-hoverable:hover {
-  box-shadow: 0 8px 20px rgba(91, 91, 255, 0.12);
+  box-shadow: var(--shadow-md);
   border-color: var(--color-primary-light);
   transform: translateY(-2px);
 }
 
 .card-hoverable:active {
   transform: translateY(0);
-  box-shadow: 0 4px 12px rgba(91, 91, 255, 0.08);
+  box-shadow: var(--shadow-sm);
 }
 
 .card-clickable {

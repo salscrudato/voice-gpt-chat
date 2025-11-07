@@ -11,19 +11,24 @@ service firebase.storage {
       return memoId.matches('^[0-9a-f\\-]{36}\\.(webm|mp3|wav|m4a)$');
     }
 
+    function isOwner(uid) {
+      return request.auth != null && request.auth.uid == uid;
+    }
+
     // Audio uploads: allow uploads with strict validation
     match /audio/{uid}/{memoId} {
       // Read: allow owner to read audio files
-      allow read: if isValidUserId(uid);
+      allow read: if isValidUserId(uid) && isOwner(uid);
 
       // Write: allow uploads with strict constraints
       allow write: if isValidUserId(uid) &&
+                      isOwner(uid) &&
                       isValidMemoId(memoId) &&
                       request.resource.size < 50 * 1024 * 1024 &&  // 50 MB limit
                       request.resource.contentType.matches('audio/(webm|mp3|wav|m4a)');
 
       // Delete: allow owner to delete
-      allow delete: if isValidUserId(uid);
+      allow delete: if isValidUserId(uid) && isOwner(uid);
     }
 
     // Deny all other access

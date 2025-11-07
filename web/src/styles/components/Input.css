@@ -50,15 +50,15 @@
   transition: all var(--transition-base);
   font-weight: 400;
   letter-spacing: -0.2px;
-  box-shadow: 0 2px 4px rgba(91, 91, 255, 0.04);
+  box-shadow: var(--shadow-xs);
 }
 
 .input:focus,
 .textarea:focus {
   outline: none;
   border-color: var(--color-primary);
-  box-shadow: 0 0 0 3px rgba(91, 91, 255, 0.1), 0 2px 8px rgba(91, 91, 255, 0.08);
-  background-color: var(--color-secondary-light);
+  box-shadow: 0 0 0 3px rgba(91, 91, 255, 0.1), var(--shadow-md);
+  background-color: var(--color-bg-hover);
 }
 
 .input:disabled,

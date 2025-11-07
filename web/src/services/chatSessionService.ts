@@ -111,6 +111,23 @@ export async function addMessageToSession(
 }
 
 /**
+ * Save a user message to a chat session
+ * Convenience function for persisting user messages immediately
+ */
+export async function saveUserMessage(
+  userId: string,
+  sessionId: string,
+  content: string
+): Promise<void> {
+  const message: ChatMessage = {
+    role: "user",
+    content,
+    timestamp: new Date(),
+  };
+  return addMessageToSession(userId, sessionId, message);
+}
+
+/**
  * Get messages from a chat session
  */
 export async function getSessionMessages(

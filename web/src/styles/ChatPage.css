@@ -13,7 +13,7 @@
   display: flex;
   justify-content: space-between;
   align-items: center;
-  box-shadow: 0 2px 8px rgba(91, 91, 255, 0.06);
+  box-shadow: var(--shadow-sm);
   border-bottom: 1px solid var(--color-border);
   position: relative;
   z-index: 100;
@@ -29,6 +29,10 @@
   right: 0;
   height: 1px;
   background: linear-gradient(90deg, transparent, var(--color-border), transparent);
+}
+
+.chat-header:hover {
+  box-shadow: var(--shadow-md);
 }
 
 .chat-header h1 {
@@ -54,7 +58,6 @@
   color: var(--color-primary);
   filter: drop-shadow(0 2px 8px rgba(91, 91, 255, 0.15));
   -webkit-text-fill-color: unset;
-  animation: float 3s ease-in-out infinite;
 }
 
 .header-right {
@@ -93,19 +96,39 @@
   font-size: 0.875rem;
   font-weight: 600;
   letter-spacing: -0.2px;
-  box-shadow: 0 2px 4px rgba(91, 91, 255, 0.04);
+  box-shadow: var(--shadow-xs);
+  position: relative;
+  overflow: hidden;
+}
+
+.clear-name-btn::before {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 0;
+  height: 0;
+  border-radius: 50%;
+  background: rgba(91, 91, 255, 0.1);
+  transform: translate(-50%, -50%);
+  transition: width 0.6s, height 0.6s;
+}
+
+.clear-name-btn:hover:not(:disabled)::before {
+  width: 150px;
+  height: 150px;
 }
 
 .clear-name-btn:hover:not(:disabled) {
-  background: var(--color-bg-tertiary);
+  background: var(--color-bg-hover);
   border-color: var(--color-primary);
-  box-shadow: 0 4px 12px rgba(91, 91, 255, 0.12);
+  box-shadow: var(--shadow-sm);
   transform: translateY(-2px);
 }
 
 .clear-name-btn:active:not(:disabled) {
   transform: translateY(0);
-  box-shadow: 0 2px 4px rgba(91, 91, 255, 0.04);
+  box-shadow: var(--shadow-xs);
 }
 
 .chat-tabs {
@@ -149,6 +172,12 @@
 
 .tab:hover {
   color: var(--color-text-primary);
+}
+
+.tab:hover::after {
+  background: rgba(91, 91, 255, 0.3);
+  left: 5%;
+  right: 5%;
 }
 
 .tab.active {

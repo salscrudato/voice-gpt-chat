@@ -1,16 +1,19 @@
 /**
  * Rate Limiter - Prevents abuse of the chat API
- * Uses in-memory store with TTL for rate limiting
+ * Uses Firestore for persistent, distributed rate limiting
  */
+import { Firestore } from "@google-cloud/firestore";
 declare class RateLimiter {
-    private store;
+    private db;
     private readonly windowMs;
     private readonly maxRequests;
-    constructor(windowMs?: number, maxRequests?: number);
+    private readonly collectionPath;
+    private localCache;
+    constructor(db: Firestore, windowMs?: number, maxRequests?: number);
     /**
-     * Check if request is allowed
+     * Check if request is allowed (async)
      */
-    isAllowed(key: string): boolean;
+    isAllowed(key: string): Promise<boolean>;
     /**
      * Get remaining requests
      */
@@ -20,13 +23,13 @@ declare class RateLimiter {
      */
     getResetTime(key: string): number;
     /**
-     * Cleanup old entries
+     * Cleanup old entries from Firestore
      */
     private cleanup;
     /**
      * Reset for a specific key
      */
-    reset(key: string): void;
+    reset(key: string): Promise<void>;
 }
 export default RateLimiter;
 //# sourceMappingURL=rateLimiter.d.ts.map

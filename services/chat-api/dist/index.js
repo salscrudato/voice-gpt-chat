@@ -3,18 +3,17 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-const dotenv_1 = __importDefault(require("dotenv"));
 const express_1 = __importDefault(require("express"));
 const cors_1 = __importDefault(require("cors"));
 const app_1 = require("firebase-admin/app");
+const auth_1 = require("firebase-admin/auth");
 const firestore_1 = require("@google-cloud/firestore");
 const aiplatform_1 = require("@google-cloud/aiplatform");
 const openai_1 = __importDefault(require("openai"));
 const rateLimiter_1 = __importDefault(require("./rateLimiter"));
-// Load environment variables from .env file
-dotenv_1.default.config();
 // Initialize Firebase Admin
-(0, app_1.initializeApp)({ credential: (0, app_1.applicationDefault)() });
+const firebaseApp = (0, app_1.initializeApp)({ credential: (0, app_1.applicationDefault)() });
+const auth = (0, auth_1.getAuth)(firebaseApp);
 // Initialize clients
 const db = new firestore_1.Firestore({
     preferRest: false,
@@ -28,8 +27,8 @@ const openai = new openai_1.default({
     timeout: 30000, // 30 second timeout
     maxRetries: 2,
 });
-// Initialize rate limiter (30 requests per minute per user)
-const rateLimiter = new rateLimiter_1.default(60000, 30);
+// Initialize Firestore-backed rate limiter (30 requests per minute per user)
+const rateLimiter = new rateLimiter_1.default(db, 60000, 30);
 // Constants for resilience
 const FIRESTORE_TIMEOUT_MS = 10000;
 const EMBEDDING_TIMEOUT_MS = 15000;
@@ -105,18 +104,121 @@ function withTimeout(promise, timeoutMs, label) {
         new Promise((_, reject) => setTimeout(() => reject(new Error(`${label} timeout after ${timeoutMs}ms`)), timeoutMs)),
     ]);
 }
+// Helper: Calculate cosine similarity between two vectors
+function cosineSimilarity(a, b) {
+    if (a.length !== b.length)
+        return 0;
+    let dotProduct = 0;
+    let normA = 0;
+    let normB = 0;
+    for (let i = 0; i < a.length; i++) {
+        dotProduct += a[i] * b[i];
+        normA += a[i] * a[i];
+        normB += b[i] * b[i];
+    }
+    const denominator = Math.sqrt(normA) * Math.sqrt(normB);
+    return denominator === 0 ? 0 : dotProduct / denominator;
+}
+// Helper: Maximal Marginal Relevance (MMR) selection
+// Balances relevance to query with diversity from already-selected items
+function selectByMMR(candidates, queryEmbedding, k, lambda = 0.5) {
+    if (candidates.length === 0)
+        return [];
+    if (candidates.length <= k) {
+        return candidates.map(c => ({ text: c.text, memoId: c.memoId, chunkIndex: c.chunkIndex }));
+    }
+    const selected = [];
+    const remaining = [...candidates];
+    // Select first item (highest relevance to query)
+    let bestIdx = 0;
+    let bestScore = -Infinity;
+    for (let i = 0; i < remaining.length; i++) {
+        const relevance = cosineSimilarity(remaining[i].embedding, queryEmbedding);
+        if (relevance > bestScore) {
+            bestScore = relevance;
+            bestIdx = i;
+        }
+    }
+    selected.push(remaining[bestIdx]);
+    remaining.splice(bestIdx, 1);
+    // Select remaining items using MMR
+    while (selected.length < k && remaining.length > 0) {
+        bestIdx = 0;
+        bestScore = -Infinity;
+        for (let i = 0; i < remaining.length; i++) {
+            const relevance = cosineSimilarity(remaining[i].embedding, queryEmbedding);
+            // Calculate max similarity to already selected items
+            let maxSimilarityToSelected = 0;
+            for (const s of selected) {
+                const sim = cosineSimilarity(remaining[i].embedding, s.embedding);
+                maxSimilarityToSelected = Math.max(maxSimilarityToSelected, sim);
+            }
+            // MMR score: balance relevance and diversity
+            const mmrScore = lambda * relevance - (1 - lambda) * maxSimilarityToSelected;
+            if (mmrScore > bestScore) {
+                bestScore = mmrScore;
+                bestIdx = i;
+            }
+        }
+        selected.push(remaining[bestIdx]);
+        remaining.splice(bestIdx, 1);
+    }
+    return selected.map(c => ({ text: c.text, memoId: c.memoId, chunkIndex: c.chunkIndex }));
+}
+// Helper: Hybrid search - keyword matching fallback
+function keywordSearch(chunks, query, limit) {
+    const queryTerms = query.toLowerCase().split(/\W+/).filter(t => t.length > 2);
+    // Score chunks by keyword matches
+    const scored = chunks.map(chunk => {
+        let score = 0;
+        const chunkText = chunk.text.toLowerCase();
+        // Match query terms in text
+        for (const term of queryTerms) {
+            const regex = new RegExp(`\\b${term}\\b`, "g");
+            const matches = chunkText.match(regex);
+            score += (matches?.length || 0) * 2;
+        }
+        // Match chunk terms if available
+        if (chunk.terms) {
+            for (const term of queryTerms) {
+                if (chunk.terms.some(t => t.includes(term) || term.includes(t))) {
+                    score += 1;
+                }
+            }
+        }
+        return { chunk, score };
+    });
+    return scored
+        .filter(s => s.score > 0)
+        .sort((a, b) => b.score - a.score)
+        .slice(0, limit)
+        .map(s => ({ text: s.chunk.text, memoId: s.chunk.memoId, chunkIndex: s.chunk.chunkIndex }));
+}
+// Helper: Deduplicate chunks by memoId and chunkIndex
+function deduplicateChunks(chunks) {
+    const seen = new Set();
+    const result = [];
+    for (const chunk of chunks) {
+        const key = `${chunk.memoId}:${chunk.chunkIndex}`;
+        if (!seen.has(key)) {
+            seen.add(key);
+            result.push(chunk);
+        }
+    }
+    return result;
+}
 // Chat endpoint with RAG and streaming
 app.post("/chat", async (req, res) => {
     let streamStarted = false;
     try {
-        // Get userId from header (required)
-        const userId = req.headers["x-user-id"] || "";
-        // Validate user ID format (user_<uuid>)
-        if (!userId || !userId.match(/^user_[0-9a-f\-]{36}$/i)) {
-            return res.status(400).json({ error: "Invalid user ID format" });
+        // Get userId from verified token (set by auth middleware)
+        const userId = req.uid;
+        if (!userId) {
+            return res.status(401).json({ error: "Unauthorized" });
         }
-        // Rate limiting check
-        if (!rateLimiter.isAllowed(userId)) {
+        // Rate limiting check (async)
+        const allowed = await rateLimiter.isAllowed(userId);
+        if (!allowed) {
             const resetTime = rateLimiter.getResetTime(userId);
             const retryAfter = Math.ceil((resetTime - Date.now()) / 1000);
             res.set("Retry-After", retryAfter.toString());
@@ -200,29 +302,37 @@ app.post("/chat", async (req, res) => {
                         throw new Error("No embedding generated");
                     }
                     console.log("Query embedded, vector dimension:", queryVec.length);
-                    // Vector search in Firestore
+                    // Vector search in Firestore with MMR and deduplication
                     try {
                         // @ts-ignore - Vector types present in server SDK
-                        const vectorQuery = coll.findNearest({
+                        const vectorQuery = coll
+                            .where("memoDeleted", "==", false) // Filter out deleted memos
+                            .findNearest({
                             vectorField: "embedding",
                             queryVector: queryVec,
-                            limit: 12,
+                            limit: 20, // Get more candidates for MMR selection
                             distanceMeasure: "COSINE",
                         });
                         // @ts-ignore
                         const snap = await withTimeout(vectorQuery.get(), FIRESTORE_TIMEOUT_MS, "Vector search");
+                        // Collect candidates with embeddings for MMR
+                        const candidates = [];
                         // @ts-ignore
                         snap.forEach((doc) => {
                             const data = doc.data();
-                            if (data.text && data.memoId && typeof data.chunkIndex === "number") {
-                                contexts.push({
-                                    text: String(data.text).substring(0, 2000), // Limit chunk size
+                            if (data.text && data.memoId && typeof data.chunkIndex === "number" && Array.isArray(data.embedding?.value)) {
+                                candidates.push({
+                                    text: String(data.text).substring(0, 2000),
+                                    embedding: data.embedding.value,
                                     memoId: String(data.memoId),
                                     chunkIndex: data.chunkIndex,
                                 });
                             }
                         });
-                        console.log("Vector search successful, found", contexts.length, "chunks");
+                        // Apply MMR for diversity
+                        const mmrSelected = selectByMMR(candidates, queryVec, 12, 0.5);
+                        contexts.push(...mmrSelected);
+                        console.log("Vector search successful, found", contexts.length, "chunks after MMR");
                     }
                     catch (vectorError) {
                         console.warn("Vector search failed:", vectorError.message);
@@ -230,21 +340,26 @@ app.post("/chat", async (req, res) => {
                     }
                 }
                 catch (embeddingError) {
-                    console.warn("Embedding/vector search failed, using fallback:", embeddingError.message);
-                    // Fallback: simple text search
+                    console.warn("Embedding/vector search failed, using hybrid keyword fallback:", embeddingError.message);
+                    // Fallback: hybrid keyword search
                     try {
-                        const snap = await withTimeout(coll.limit(10).get(), FIRESTORE_TIMEOUT_MS, "Fallback search");
+                        const snap = await withTimeout(coll.where("memoDeleted", "==", false).limit(50).get(), FIRESTORE_TIMEOUT_MS, "Fallback search");
+                        const chunks = [];
                         snap.forEach((doc) => {
                             const data = doc.data();
                             if (data.text && data.memoId && typeof data.chunkIndex === "number") {
-                                contexts.push({
+                                chunks.push({
                                     text: String(data.text).substring(0, 2000),
+                                    terms: Array.isArray(data.terms) ? data.terms : [],
                                     memoId: String(data.memoId),
                                     chunkIndex: data.chunkIndex,
                                 });
                             }
                         });
-                        console.log("Fallback search found", contexts.length, "chunks");
+                        // Apply keyword search scoring
+                        const keywordResults = keywordSearch(chunks, latestUser, 12);
+                        contexts.push(...keywordResults);
+                        console.log("Hybrid keyword search found", contexts.length, "chunks");
                     }
                     catch (fallbackError) {
                         console.warn("Fallback search also failed:", fallbackError.message);
@@ -258,9 +373,12 @@ app.post("/chat", async (req, res) => {
         catch (error) {
             console.warn("Error retrieving chunks:", error.message);
         }
-        console.log("Found", contexts.length, "relevant chunks");
+        console.log("Found", contexts.length, "relevant chunks before deduplication");
+        // Deduplicate chunks
+        const deduplicatedContexts = deduplicateChunks(contexts);
+        console.log("After deduplication:", deduplicatedContexts.length, "chunks");
         // 3) Build context with citations
-        const contextBlocks = contexts
+        const contextBlocks = deduplicatedContexts
             .map((c) => `— [memo:${c.memoId} #${c.chunkIndex}] ${c.text}`)
             .join("\n");
         const system = `You are VoiceGPT, an AI assistant that helps users understand and explore their voice memos.
@@ -279,7 +397,7 @@ Always provide accurate citations for any information you reference.`;
         // Send initial context/citations
         res.write(`data: ${JSON.stringify({
             type: "citations",
-            citations: contexts.map((c) => ({
+            citations: deduplicatedContexts.map((c) => ({
                 memoId: c.memoId,
                 chunkIndex: c.chunkIndex,
                 text: c.text,
@@ -297,10 +415,18 @@ Always provide accurate citations for any information you reference.`;
                     },
                 ],
             }), OPENAI_TIMEOUT_MS, "OpenAI streaming");
+            let lastKeepAlive = Date.now();
+            const KEEP_ALIVE_INTERVAL = 15000; // 15 seconds
             for await (const part of stream) {
                 const delta = part.choices?.[0]?.delta?.content || "";
                 if (delta) {
                     res.write(`data: ${JSON.stringify({ type: "delta", delta })}\n\n`);
+                    lastKeepAlive = Date.now();
+                }
+                // Send keep-alive comment if no data for 15 seconds
+                if (Date.now() - lastKeepAlive > KEEP_ALIVE_INTERVAL) {
+                    res.write(": keep-alive\n\n");
+                    lastKeepAlive = Date.now();
                 }
             }
             res.write(`data: ${JSON.stringify({ type: "done" })}\n\n`);

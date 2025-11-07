@@ -1,13 +1,23 @@
 import {useEffect, useRef, useState} from "react";
 import {MdChat, MdSend, MdError, MdDelete, MdRefresh} from "react-icons/md";
-import {getUserId} from "../utils/userManager";
 import {validateChatMessage} from "../utils/validation";
-import {Button, Card, Badge, Input} from "./index";
-import {createChatSession, addMessageToSession, getChatSessions} from "../services/chatSessionService";
+import {Button, Card, Badge, Input, Modal} from "./index";
+import {createChatSession, addMessageToSession, getChatSessions, getSessionMessages} from "../services/chatSessionService";
 import {ChatSession, ChatMessage} from "../types";
+import {getUserUid, getIdToken} from "../utils/authManager";
+import {db} from "../firebase";
+import {doc, getDoc} from "firebase/firestore";
 import "../styles/ChatInterface.css";
 
-const CHAT_API_URL = import.meta.env.VITE_CHAT_API_URL || "http://localhost:8080/chat";
+// Enforce VITE_CHAT_API_URL - fail fast if not configured
+const CHAT_API_URL = import.meta.env.VITE_CHAT_API_URL;
+if (!CHAT_API_URL) {
+  throw new Error(
+    "VITE_CHAT_API_URL environment variable is not set. " +
+    "Please configure it in .env.local to point to your deployed Chat API endpoint. " +
+    "See .env.local.example for details."
+  );
+}
 
 export default function ChatInterface() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -17,22 +27,43 @@ export default function ChatInterface() {
   const [currentSession, setCurrentSession] = useState<ChatSession | null>(null);
   const [sessions, setSessions] = useState<ChatSession[]>([]);
   const [showSessions, setShowSessions] = useState(false);
+  const [selectedCitation, setSelectedCitation] = useState<{memoId: string; chunkIndex: number} | null>(null);
+  const [citationMemo, setCitationMemo] = useState<any>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
-  const userId = getUserId();
+  const userId = getUserUid();
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({behavior: "smooth"});
   };
 
+  const handleCitationClick = async (memoId: string, chunkIndex: number) => {
+    if (!userId) return;
+
+    try {
+      setSelectedCitation({memoId, chunkIndex});
+      // Fetch the memo to display its transcript
+      const memoRef = doc(db, "users", userId, "memos", memoId);
+      const memoSnap = await getDoc(memoRef);
+      if (memoSnap.exists()) {
+        setCitationMemo(memoSnap.data());
+      }
+    } catch (err) {
+      console.error("Error fetching citation memo:", err);
+    }
+  };
+
   // Load sessions on mount
   useEffect(() => {
     const loadSessions = async () => {
+      if (!userId) return;
       try {
         const loadedSessions = await getChatSessions(userId);
         setSessions(loadedSessions);
         if (loadedSessions.length > 0 && !currentSession) {
           setCurrentSession(loadedSessions[0]);
-          setMessages(loadedSessions[0].messages || []);
+          // Load messages from subcollection
+          const sessionMessages = await getSessionMessages(userId, loadedSessions[0].id);
+          setMessages(sessionMessages);
         }
       } catch (err) {
         console.error("Failed to load sessions:", err);
@@ -47,6 +78,10 @@ export default function ChatInterface() {
 
   // Create new session
   const handleNewSession = async () => {
+    if (!userId) {
+      setError("User not authenticated");
+      return;
+    }
     try {
       const title = `Conversation ${new Date().toLocaleDateString()}`;
       const session = await createChatSession(userId, title);
@@ -60,9 +95,16 @@ export default function ChatInterface() {
   };
 
   // Switch to session
-  const handleSwitchSession = (session: ChatSession) => {
+  const handleSwitchSession = async (session: ChatSession) => {
+    if (!userId) return;
     setCurrentSession(session);
-    setMessages(session.messages || []);
+    try {
+      const sessionMessages = await getSessionMessages(userId, session.id);
+      setMessages(sessionMessages);
+    } catch (err) {
+      console.error("Failed to load session messages:", err);
+      setMessages([]);
+    }
     setShowSessions(false);
   };
 
@@ -75,6 +117,11 @@ export default function ChatInterface() {
 
 
   const sendMessage = async () => {
+    if (!userId) {
+      setError("Not authenticated");
+      return;
+    }
+
     // Validate message
     const validation = validateChatMessage(input);
     if (!validation.valid) {
@@ -102,6 +149,15 @@ export default function ChatInterface() {
     setError(null);
 
     try {
+      // Persist user message immediately
+      if (currentSession) {
+        try {
+          await addMessageToSession(userId, currentSession.id, userMessage);
+        } catch (err) {
+          console.error("Failed to persist user message:", err);
+        }
+      }
+
       const payload = {messages: [...messages, userMessage]};
       let reader: ReadableStreamDefaultReader<Uint8Array> | null = null;
 
@@ -111,13 +167,21 @@ export default function ChatInterface() {
 
         console.log("Sending chat request to:", CHAT_API_URL);
 
+        // Get ID token for authorization
+        let idToken: string;
+        try {
+          idToken = await getIdToken();
+        } catch (tokenErr) {
+          throw new Error("Failed to get authorization token");
+        }
+
         let response: Response;
         try {
           response = await fetch(CHAT_API_URL, {
             method: "POST",
             headers: {
               "Content-Type": "application/json",
-              "x-user-id": userId,
+              "Authorization": `Bearer ${idToken}`,
             },
             body: JSON.stringify(payload),
             signal: controller.signal,
@@ -308,9 +372,16 @@ export default function ChatInterface() {
                   <div className="citations-label">Sources:</div>
                   <div className="citations-list">
                     {msg.citations.map((citation, cidx) => (
-                      <Badge key={cidx} variant="secondary" size="sm">
-                        Memo {citation.memoId.substring(0, 8)}... (chunk {citation.chunkIndex})
-                      </Badge>
+                      <button
+                        key={cidx}
+                        onClick={() => handleCitationClick(citation.memoId, citation.chunkIndex)}
+                        className="citation-button"
+                        title="Click to view source memo"
+                      >
+                        <Badge variant="secondary" size="sm">
+                          Memo {citation.memoId.substring(0, 8)}... (chunk {citation.chunkIndex})
+                        </Badge>
+                      </button>
                     ))}
                   </div>
                 </div>
@@ -349,6 +420,33 @@ export default function ChatInterface() {
           </button>
         </div>
       </div>
+
+      {/* Citation Memo Modal */}
+      <Modal
+        isOpen={!!selectedCitation && !!citationMemo}
+        onClose={() => {
+          setSelectedCitation(null);
+          setCitationMemo(null);
+        }}
+        title="Source Memo"
+        size="md"
+      >
+        {citationMemo && selectedCitation && (
+          <div>
+            <div style={{marginBottom: "16px", paddingBottom: "16px", borderBottom: "1px solid var(--border-color)"}}>
+              <p style={{margin: "4px 0"}}>
+                <strong>Chunk:</strong> {selectedCitation.chunkIndex}
+              </p>
+              <p style={{margin: "4px 0"}}>
+                <strong>User:</strong> {citationMemo.userName || "Unknown"}
+              </p>
+            </div>
+            <div style={{lineHeight: "1.6", whiteSpace: "pre-wrap", wordWrap: "break-word", maxHeight: "400px", overflowY: "auto"}}>
+              {citationMemo.transcript}
+            </div>
+          </div>
+        )}
+      </Modal>
     </div>
   );
 }

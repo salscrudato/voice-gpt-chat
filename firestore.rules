@@ -50,7 +50,9 @@ service cloud.firestore {
              (!data.keys().hasAny(['tags']) || isValidArray(data.tags, 20)) &&
              (!data.keys().hasAny(['status']) || data.status in ['pending', 'transcribing', 'transcribed', 'embedding', 'indexed', 'error']) &&
              (!data.keys().hasAny(['wordCount']) || data.wordCount is int) &&
-             (!data.keys().hasAny(['qualityScore']) || (data.qualityScore is int && data.qualityScore >= 0 && data.qualityScore <= 100));
+             (!data.keys().hasAny(['qualityScore']) || (data.qualityScore is int && data.qualityScore >= 0 && data.qualityScore <= 100)) &&
+             (!data.keys().hasAny(['isDeleted']) || data.isDeleted is bool) &&
+             (!data.keys().hasAny(['deletedAt']) || isValidTimestamp(data.deletedAt));
     }
 
     // Validate chat message

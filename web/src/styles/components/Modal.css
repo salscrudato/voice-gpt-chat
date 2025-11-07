@@ -16,12 +16,13 @@
 .modal {
   background-color: var(--color-bg-primary);
   border-radius: 1.75rem;
-  box-shadow: 0 25px 70px rgba(91, 91, 255, 0.2);
+  box-shadow: var(--shadow-3xl);
   max-height: 90vh;
   overflow-y: auto;
   z-index: var(--z-modal);
   animation: slideUp 0.4s cubic-bezier(0.34, 1.56, 0.64, 1);
   border: 1px solid var(--color-border);
+  backdrop-filter: blur(10px);
 }
 
 /* Sizes */
@@ -71,14 +72,34 @@
   justify-content: center;
   border-radius: 0.875rem;
   transition: all var(--transition-base);
-  box-shadow: 0 2px 4px rgba(91, 91, 255, 0.04);
+  box-shadow: var(--shadow-xs);
+  position: relative;
+  overflow: hidden;
+}
+
+.modal-close-btn::before {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 0;
+  height: 0;
+  border-radius: 50%;
+  background: rgba(91, 91, 255, 0.1);
+  transform: translate(-50%, -50%);
+  transition: width 0.6s, height 0.6s;
+}
+
+.modal-close-btn:hover::before {
+  width: 100px;
+  height: 100px;
 }
 
 .modal-close-btn:hover {
-  background-color: var(--color-bg-tertiary);
+  background-color: var(--color-bg-hover);
   color: var(--color-text-primary);
   border-color: var(--color-primary);
-  box-shadow: 0 4px 12px rgba(91, 91, 255, 0.12);
+  box-shadow: var(--shadow-sm);
   transform: rotate(90deg);
 }
 
