@@ -210,12 +210,17 @@ export const onAudioUpload = onObjectFinalized(
 
       if (fileSizeBytes > maxSizeBytes) {
         logger.error("Audio file too large:", {uid, memoId, fileSizeBytes});
-        throw new Error(`Audio file too large: ${fileSizeBytes} bytes (max: ${maxSizeBytes})`);
+        const msg = `Audio file too large: ${fileSizeBytes} bytes ` +
+          `(max: ${maxSizeBytes})`;
+        throw new Error(msg);
       }
 
       // Validate content type
       const contentType = file.contentType || "";
-      const validAudioTypes = ["audio/webm", "audio/mp4", "audio/m4a", "audio/wav", "audio/mp3", "audio/mpeg"];
+      const validAudioTypes = [
+        "audio/webm", "audio/mp4", "audio/m4a", "audio/wav",
+        "audio/mp3", "audio/mpeg",
+      ];
       if (!validAudioTypes.some((type) => contentType.startsWith(type))) {
         logger.error("Invalid audio content type:", {uid, memoId, contentType});
         throw new Error(`Invalid audio content type: ${contentType}`);
@@ -366,7 +371,7 @@ export const onAudioUpload = onObjectFinalized(
           if (!fileResults) {
             const resultsArray = Object.values(
               firstElement.results
-            ) as any[];
+            ) as Record<string, unknown>[];
             if (resultsArray.length > 0) {
               fileResults = resultsArray[0];
               logger.info("Using first available result key from array");
@@ -383,7 +388,9 @@ export const onAudioUpload = onObjectFinalized(
 
         // If not found, try first available result
         if (!fileResults) {
-          const resultsArray = Object.values(resp.results) as any[];
+          const resultsArray = Object.values(
+            resp.results
+          ) as Record<string, unknown>[];
           if (resultsArray.length > 0) {
             fileResults = resultsArray[0];
             logger.info("Using first available result key from object");
@@ -546,15 +553,23 @@ export const onAudioUpload = onObjectFinalized(
         let errorCategory = "UNKNOWN";
         if (errMsg.includes("timeout")) {
           errorCategory = "TIMEOUT";
-        } else if (errMsg.includes("too small") || errMsg.includes("too large")) {
+        } else if (
+          errMsg.includes("too small") || errMsg.includes("too large")
+        ) {
           errorCategory = "INVALID_FILE_SIZE";
         } else if (errMsg.includes("content type")) {
           errorCategory = "INVALID_CONTENT_TYPE";
-        } else if (errMsg.includes("permission") || errMsg.includes("denied")) {
+        } else if (
+          errMsg.includes("permission") || errMsg.includes("denied")
+        ) {
           errorCategory = "PERMISSION_ERROR";
-        } else if (errMsg.includes("quota") || errMsg.includes("rate limit")) {
+        } else if (
+          errMsg.includes("quota") || errMsg.includes("rate limit")
+        ) {
           errorCategory = "QUOTA_EXCEEDED";
-        } else if (errMsg.includes("network") || errMsg.includes("connection")) {
+        } else if (
+          errMsg.includes("network") || errMsg.includes("connection")
+        ) {
           errorCategory = "NETWORK_ERROR";
         }
 
