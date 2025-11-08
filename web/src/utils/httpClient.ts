@@ -1,10 +1,9 @@
 /**
  * Unified HTTP Client with Retry Logic, Circuit Breaker, and Request Deduplication
- * Provides centralized API communication with automatic retries, error handling, circuit breaking,
- * request deduplication, and streaming support
+ * Lean, professional implementation for enterprise-grade API communication
  */
 
-import {logError, logInfo, shouldRetry, getRetryDelay} from "./errorHandler";
+import {logError, logInfo, logWarning} from "./errorHandler";
 
 export interface RetryConfig {
   maxAttempts?: number;
@@ -36,59 +35,42 @@ const DEFAULT_RETRY_CONFIG: RetryConfig = {
   jitterFactor: 0.1,
 };
 
-const DEFAULT_TIMEOUT = 30000; // 30 seconds
+const DEFAULT_TIMEOUT = 30000;
+const HISTORY_TTL_MS = 60000;
 
-/**
- * Simple circuit breaker for HTTP endpoints
- */
 class CircuitBreaker {
   private failureCount = 0;
   private successCount = 0;
   private state: "closed" | "open" | "half-open" = "closed";
   private lastFailureTime = 0;
-  private readonly failureThreshold = 5;
-  private readonly successThreshold = 2;
-  private readonly resetTimeoutMs = 30000; // 30 seconds
 
   isOpen(): boolean {
-    if (this.state === "open") {
-      if (Date.now() - this.lastFailureTime > this.resetTimeoutMs) {
-        this.state = "half-open";
-        this.successCount = 0;
-        return false;
-      }
-      return true;
+    if (this.state === "open" && Date.now() - this.lastFailureTime > 30000) {
+      this.state = "half-open";
+      this.successCount = 0;
+      return false;
     }
-    return false;
+    return this.state === "open";
   }
 
   recordSuccess(): void {
     this.failureCount = 0;
-    if (this.state === "half-open") {
-      this.successCount++;
-      if (this.successCount >= this.successThreshold) {
-        this.state = "closed";
-      }
+    if (this.state === "half-open" && ++this.successCount >= 2) {
+      this.state = "closed";
     }
   }
 
   recordFailure(): void {
-    this.failureCount++;
     this.lastFailureTime = Date.now();
-    if (this.failureCount >= this.failureThreshold) {
+    if (++this.failureCount >= 5) {
       this.state = "open";
     }
-  }
-
-  getState(): string {
-    return this.state;
   }
 }
 
 const circuitBreakers = new Map<string, CircuitBreaker>();
 const inFlightRequests = new Map<string, Promise<any>>();
 const requestHistory = new Map<string, { result: any; timestamp: number }>();
-const HISTORY_TTL_MS = 60000; // 1 minute
 
 function getCircuitBreaker(url: string): CircuitBreaker {
   const domain = new URL(url).hostname;
@@ -98,27 +80,16 @@ function getCircuitBreaker(url: string): CircuitBreaker {
   return circuitBreakers.get(domain)!;
 }
 
-/**
- * Generate idempotency key from request data
- */
-function generateIdempotencyKeyInternal(url: string, options: RequestOptions): string {
+function generateRequestIdempotencyKey(url: string, options: RequestOptions): string {
   const key = `${options.method || "GET"}:${url}:${JSON.stringify(options.body || "")}`;
   let hash = 0;
   for (let i = 0; i < key.length; i++) {
-    const char = key.charCodeAt(i);
-    hash = ((hash << 5) - hash) + char;
-    hash = hash & hash;
+    hash = ((hash << 5) - hash) + key.charCodeAt(i);
   }
   return `${Math.abs(hash)}`;
 }
 
-/**
- * Calculate exponential backoff delay with jitter
- */
-function calculateBackoffDelay(
-  attempt: number,
-  config: RetryConfig
-): number {
+function calculateBackoffDelay(attempt: number, config: RetryConfig): number {
   const {initialDelayMs = 1000, maxDelayMs = 10000, backoffMultiplier = 2, jitterFactor = 0.1} = config;
   const exponentialDelay = initialDelayMs * Math.pow(backoffMultiplier, attempt);
   const cappedDelay = Math.min(exponentialDelay, maxDelayMs);
@@ -126,52 +97,32 @@ function calculateBackoffDelay(
   return cappedDelay + jitter;
 }
 
-/**
- * Fetch with timeout
- */
-async function fetchWithTimeout(
-  url: string,
-  options: RequestOptions
-): Promise<Response> {
+async function fetchWithTimeout(url: string, options: RequestOptions): Promise<Response> {
   const timeout = options.timeout || DEFAULT_TIMEOUT;
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), timeout);
 
   try {
-    const response = await fetch(url, {
-      ...options,
-      signal: controller.signal,
-    });
-    return response;
+    return await fetch(url, {...options, signal: controller.signal});
   } finally {
     clearTimeout(timeoutId);
   }
 }
 
-/**
- * HTTP Client with automatic retries, circuit breaker, and request deduplication
- */
-export async function httpClient<T = any>(
-  url: string,
-  options: RequestOptions = {}
-): Promise<T> {
+export async function httpClient<T = any>(url: string, options: RequestOptions = {}): Promise<T> {
   const circuitBreaker = getCircuitBreaker(url);
 
-  // Check circuit breaker state
   if (circuitBreaker.isOpen()) {
-    throw new Error(`Service temporarily unavailable (circuit breaker open). Please try again later.`);
+    throw new Error("Service temporarily unavailable. Please try again later.");
   }
 
-  // Handle request deduplication
-  const idempotencyKey = options.idempotencyKey || generateIdempotencyKeyInternal(url, options);
+  const idempotencyKey = options.idempotencyKey || generateRequestIdempotencyKey(url, options);
 
-  // Check if request is already in flight
   if (inFlightRequests.has(idempotencyKey)) {
     logInfo(`Deduplicating request: ${idempotencyKey}`);
     return inFlightRequests.get(idempotencyKey)!;
   }
 
-  // Check request history for idempotency
   const cached = requestHistory.get(idempotencyKey);
   if (cached && Date.now() - cached.timestamp < HISTORY_TTL_MS) {
     logInfo(`Returning cached result for: ${idempotencyKey}`);
@@ -186,7 +137,6 @@ export async function httpClient<T = any>(
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
       try {
         logInfo(`HTTP ${options.method || "GET"} ${url} (attempt ${attempt + 1}/${maxAttempts})`);
-
         const response = await fetchWithTimeout(url, options);
 
         if (!response.ok) {
@@ -196,7 +146,7 @@ export async function httpClient<T = any>(
           if (isRetryable && attempt < maxAttempts - 1) {
             lastError = new Error(`HTTP ${response.status}: ${errorText.substring(0, 100)}`);
             const delay = calculateBackoffDelay(attempt, retryConfig);
-            logInfo(`Retrying after ${delay}ms...`);
+            logWarning(`Retrying after ${delay}ms...`, lastError);
             options.onRetry?.(attempt + 1, lastError);
             await new Promise((resolve) => setTimeout(resolve, delay));
             continue;
@@ -205,10 +155,8 @@ export async function httpClient<T = any>(
           throw new Error(`HTTP ${response.status}: ${errorText.substring(0, 200)}`);
         }
 
-        // Success - record in circuit breaker
         circuitBreaker.recordSuccess();
 
-        // Handle streaming responses
         if (options.streaming && response.body) {
           return await parseSSEStream(response, options);
         }
@@ -253,16 +201,9 @@ export async function httpClient<T = any>(
   }
 }
 
-/**
- * Parse SSE stream with proper buffering
- */
-async function parseSSEStream(
-  response: Response,
-  options: RequestOptions
-): Promise<StreamEvent[]> {
+async function parseSSEStream(response: Response, options: RequestOptions): Promise<StreamEvent[]> {
   const timeout = options.timeout || 120000;
   const maxBufferSize = 1024 * 1024;
-
   const events: StreamEvent[] = [];
   const reader = response.body?.getReader();
   if (!reader) throw new Error("No response body");
@@ -278,9 +219,7 @@ async function parseSSEStream(
 
   try {
     while (true) {
-      if (timedOut) {
-        throw new Error(`Stream timeout after ${timeout}ms`);
-      }
+      if (timedOut) throw new Error(`Stream timeout after ${timeout}ms`);
 
       const {value, done} = await reader.read();
       if (done) break;
@@ -293,7 +232,6 @@ async function parseSSEStream(
         throw new Error(`Stream buffer exceeded ${maxBufferSize} bytes`);
       }
 
-      // Process complete SSE events (separated by \n\n)
       const parts = buffer.split("\n\n");
       buffer = parts[parts.length - 1];
 
@@ -310,19 +248,15 @@ async function parseSSEStream(
             data: JSON.parse(jsonStr),
           };
 
-          if (event.data.type) {
-            event.type = event.data.type;
-          }
-
+          if (event.data.type) event.type = event.data.type;
           events.push(event);
           options.onStreamEvent?.(event);
         } catch (parseError) {
-          logInfo("Failed to parse SSE event", {metadata: {error: String(parseError)}});
+          logWarning("Failed to parse SSE event", parseError as Error);
         }
       }
     }
 
-    // Process remaining buffer
     if (buffer.trim()) {
       try {
         const jsonStr = buffer.replace(/^data:\s*/, "").trim();
@@ -336,7 +270,7 @@ async function parseSSEStream(
           options.onStreamEvent?.(event);
         }
       } catch (parseError) {
-        logInfo("Failed to parse final SSE event", {metadata: {error: String(parseError)}});
+        logWarning("Failed to parse final SSE event", parseError as Error);
       }
     }
 
@@ -347,9 +281,6 @@ async function parseSSEStream(
   }
 }
 
-/**
- * Convenience methods
- */
 export const http = {
   get: <T = any>(url: string, options?: RequestOptions) =>
     httpClient<T>(url, {...options, method: "GET"}),
@@ -383,21 +314,16 @@ export const http = {
     }),
 };
 
-/**
- * Backward compatibility exports for request management
- */
 export async function executeWithRetry<T>(
   fn: () => Promise<T>,
   options: {idempotencyKey?: string; timeout?: number; retryConfig?: Partial<RetryConfig>} = {}
 ): Promise<T> {
-  const idempotencyKey = options.idempotencyKey || generateIdempotencyKey({});
+  const idempotencyKey = options.idempotencyKey || `${Date.now()}-${Math.random()}`;
 
-  // Check if request is already in flight
   if (inFlightRequests.has(idempotencyKey)) {
     return inFlightRequests.get(idempotencyKey)!;
   }
 
-  // Check request history for idempotency
   const cached = requestHistory.get(idempotencyKey);
   if (cached && Date.now() - cached.timestamp < HISTORY_TTL_MS) {
     return cached.result;
@@ -415,14 +341,27 @@ export async function executeWithRetry<T>(
   }
 }
 
-export function generateIdempotencyKey(data: any): string {
+export function clearRequestCache(): void {
+  requestHistory.clear();
+  inFlightRequests.clear();
+}
+
+export function getRequestStats() {
+  return {
+    inFlightCount: inFlightRequests.size,
+    cachedCount: requestHistory.size,
+  };
+}
+
+export function generateIdempotencyKeyPublic(data: any): string {
   const str = JSON.stringify(data);
   let hash = 0;
   for (let i = 0; i < str.length; i++) {
-    const char = str.charCodeAt(i);
-    hash = ((hash << 5) - hash) + char;
-    hash = hash & hash;
+    hash = ((hash << 5) - hash) + str.charCodeAt(i);
   }
   return `${Date.now()}-${Math.abs(hash)}`;
 }
+
+// Alias for backward compatibility
+export const generateIdempotencyKey = generateIdempotencyKeyPublic;
 
