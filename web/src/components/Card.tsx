@@ -8,48 +8,7 @@ interface CardProps extends React.HTMLAttributes<HTMLDivElement> {
   padding?: "sm" | "md" | "lg";
 }
 
-interface CardHeaderProps extends React.HTMLAttributes<HTMLDivElement> {
-  children: React.ReactNode;
-}
-
-interface CardBodyProps extends React.HTMLAttributes<HTMLDivElement> {
-  children: React.ReactNode;
-}
-
-interface CardFooterProps extends React.HTMLAttributes<HTMLDivElement> {
-  children: React.ReactNode;
-}
-
-// Define subcomponents first
-const CardHeader = React.forwardRef<HTMLDivElement, CardHeaderProps>(
-  ({children, className = "", ...props}, ref) => (
-    <div ref={ref} className={`card-header ${className}`} {...props}>
-      {children}
-    </div>
-  )
-);
-CardHeader.displayName = "CardHeader";
-
-const CardBody = React.forwardRef<HTMLDivElement, CardBodyProps>(
-  ({children, className = "", ...props}, ref) => (
-    <div ref={ref} className={`card-body ${className}`} {...props}>
-      {children}
-    </div>
-  )
-);
-CardBody.displayName = "CardBody";
-
-const CardFooter = React.forwardRef<HTMLDivElement, CardFooterProps>(
-  ({children, className = "", ...props}, ref) => (
-    <div ref={ref} className={`card-footer ${className}`} {...props}>
-      {children}
-    </div>
-  )
-);
-CardFooter.displayName = "CardFooter";
-
-// Define main Card component
-const CardComponent = React.forwardRef<HTMLDivElement, CardProps>(
+export const Card = React.forwardRef<HTMLDivElement, CardProps>(
   (
     {
       children,
@@ -74,14 +33,5 @@ const CardComponent = React.forwardRef<HTMLDivElement, CardProps>(
     );
   }
 );
-CardComponent.displayName = "Card";
-
-// Attach subcomponents and export
-export const Card = Object.assign(CardComponent, {
-  Header: CardHeader,
-  Body: CardBody,
-  Footer: CardFooter,
-});
-
-export { CardHeader, CardBody, CardFooter };
+Card.displayName = "Card";
 

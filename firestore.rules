@@ -9,9 +9,9 @@ service cloud.firestore {
       return uid is string && uid.size() > 0 && uid.size() <= 256;
     }
 
-    // Validate memo ID format (UUID)
+    // Validate memo ID format (UUID or any string)
     function isValidMemoId(id) {
-      return id.matches('^[0-9a-f\\-]{36}$');
+      return id is string && id.size() > 0;
     }
 
     // Validate string length
@@ -102,7 +102,7 @@ service cloud.firestore {
       // Vector embeddings stored here and indexed for RAG
       // Written by backend only; readable by owner
       match /chunks/{chunkId} {
-        allow read: if isValidUserId(uid);
+        allow read: if isValidUserId(uid) && isOwner(uid);
         allow write: if false;
       }
 

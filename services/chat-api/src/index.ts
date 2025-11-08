@@ -1,11 +1,17 @@
+import dotenv from "dotenv";
 import express, {Request, Response} from "express";
 import cors from "cors";
 import {initializeApp, applicationDefault} from "firebase-admin/app";
 import {getAuth} from "firebase-admin/auth";
 import {Firestore} from "@google-cloud/firestore";
-import {PredictionServiceClient} from "@google-cloud/aiplatform";
+import {PredictionServiceClient, helpers} from "@google-cloud/aiplatform";
 import OpenAI from "openai";
 import RateLimiter from "./rateLimiter";
+import {validateChatRequest, validateUserId, sanitizeString} from "./validation";
+import {handleError, logError, ErrorCode, createErrorResponse} from "./errorHandler";
+
+// Load environment variables from .env.local
+dotenv.config({path: ".env.local"});
 
 // Initialize Firebase Admin
 const firebaseApp = initializeApp({credential: applicationDefault()});
@@ -33,6 +39,65 @@ const FIRESTORE_TIMEOUT_MS = 10000;
 const EMBEDDING_TIMEOUT_MS = 15000;
 const OPENAI_TIMEOUT_MS = 60000;
 
+// Circuit breaker for external services
+class CircuitBreaker {
+  private failureCount = 0;
+  private successCount = 0;
+  private state: "closed" | "open" | "half-open" = "closed";
+  private lastFailureTime = 0;
+  private readonly failureThreshold = 5;
+  private readonly successThreshold = 2;
+  private readonly resetTimeoutMs = 30000; // 30 seconds
+
+  async execute<T>(fn: () => Promise<T>, serviceName: string): Promise<T> {
+    if (this.state === "open") {
+      if (Date.now() - this.lastFailureTime > this.resetTimeoutMs) {
+        this.state = "half-open";
+        this.successCount = 0;
+        logStructured("info", "circuit_breaker_half_open", {serviceName});
+      } else {
+        throw new Error(`Circuit breaker open for ${serviceName}. Service temporarily unavailable.`);
+      }
+    }
+
+    try {
+      const result = await fn();
+      this.onSuccess();
+      return result;
+    } catch (error) {
+      this.onFailure();
+      throw error;
+    }
+  }
+
+  private onSuccess() {
+    this.failureCount = 0;
+    if (this.state === "half-open") {
+      this.successCount++;
+      if (this.successCount >= this.successThreshold) {
+        this.state = "closed";
+        logStructured("info", "circuit_breaker_closed", {});
+      }
+    }
+  }
+
+  private onFailure() {
+    this.failureCount++;
+    this.lastFailureTime = Date.now();
+    if (this.failureCount >= this.failureThreshold) {
+      this.state = "open";
+      logStructured("warn", "circuit_breaker_open", {failureCount: this.failureCount});
+    }
+  }
+
+  getState() {
+    return this.state;
+  }
+}
+
+const embeddingCircuitBreaker = new CircuitBreaker();
+const firestoreCircuitBreaker = new CircuitBreaker();
+
 const app = express();
 
 // CORS configuration
@@ -53,10 +118,60 @@ app.use(
 
 app.use(express.json({limit: "1mb"}));
 
-// Request logging middleware
+// Generate request ID for tracing
+function generateRequestId(): string {
+  return `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+}
+
+// Structured logging helper
+function logStructured(level: string, message: string, context: Record<string, any> = {}) {
+  const timestamp = new Date().toISOString();
+  const logEntry = {
+    timestamp,
+    level,
+    message,
+    ...context,
+  };
+  console.log(JSON.stringify(logEntry));
+}
+
+// Request logging middleware with structured logging
 app.use((req: Request, res: Response, next) => {
-  console.log(`[${new Date().toISOString()}] ${req.method} ${req.path}`);
+  const requestId = generateRequestId();
+  (req as any).requestId = requestId;
+
+  logStructured("info", "request_start", {
+    requestId,
+    method: req.method,
+    path: req.path,
+    uid: (req as any).uid || "anonymous",
+  });
+
   next();
+});
+
+// Authentication middleware: Verify Firebase ID token
+app.use(async (req: Request, res: Response, next) => {
+  // Skip auth for health and metrics endpoints
+  if (req.path === "/health" || req.path === "/metrics" || req.path === "/debug/users") {
+    return next();
+  }
+
+  const authHeader = req.headers.authorization || "";
+  const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : "";
+
+  if (!token) {
+    return res.status(401).json({error: "Unauthorized: Missing authorization token"});
+  }
+
+  try {
+    const decoded = await auth.verifyIdToken(token);
+    (req as any).uid = decoded.uid;
+    next();
+  } catch (error: any) {
+    console.error("Token verification failed:", error.message);
+    return res.status(401).json({error: "Unauthorized: Invalid token"});
+  }
 });
 
 // Health check endpoint
@@ -232,6 +347,44 @@ function keywordSearch(
     .map(s => ({text: s.chunk.text, memoId: s.chunk.memoId, chunkIndex: s.chunk.chunkIndex}));
 }
 
+// Helper: Summarize conversation history for context
+// Keeps last N turns (up to ~800 tokens) to maintain context without overwhelming the model
+function summarizeConversationHistory(
+  messages: Array<{role: "user" | "assistant" | "system"; content: string}>,
+  maxTurns = 8,
+  maxTokens = 800
+): string {
+  if (!messages || messages.length === 0) return "";
+
+  // Filter out system messages and get last N turns
+  const conversationMessages = messages
+    .filter(m => m.role !== "system")
+    .slice(-maxTurns);
+
+  if (conversationMessages.length === 0) return "";
+
+  // Build summary with turn markers
+  let summary = "";
+  let tokenCount = 0;
+  const tokensPerChar = 0.25; // Rough estimate: 4 chars per token
+
+  for (let i = conversationMessages.length - 1; i >= 0; i--) {
+    const msg = conversationMessages[i];
+    const prefix = msg.role === "user" ? "User: " : "Assistant: ";
+    const line = `${prefix}${msg.content.substring(0, 500)}\n`;
+    const lineTokens = Math.ceil(line.length * tokensPerChar);
+
+    if (tokenCount + lineTokens <= maxTokens) {
+      summary = line + summary;
+      tokenCount += lineTokens;
+    } else {
+      break;
+    }
+  }
+
+  return summary ? `Recent conversation context:\n${summary}\n` : "";
+}
+
 // Helper: Deduplicate chunks by memoId and chunkIndex
 function deduplicateChunks(
   chunks: Array<{text: string; memoId: string; chunkIndex: number}>
@@ -253,13 +406,24 @@ function deduplicateChunks(
 // Chat endpoint with RAG and streaming
 app.post("/chat", async (req: Request, res: Response) => {
   let streamStarted = false;
+  let requestId = "";
+  let userId = "";
+  let sessionId = "";
 
   try {
     // Get userId from verified token (set by auth middleware)
-    const userId = (req as any).uid;
+    userId = (req as any).uid;
+    requestId = (req as any).requestId;
 
-    if (!userId) {
-      return res.status(401).json({error: "Unauthorized"});
+    // Validate user ID format
+    if (!userId || !validateUserId(userId)) {
+      const errorResp = createErrorResponse(
+        ErrorCode.UNAUTHORIZED,
+        "Invalid user ID",
+        401,
+        requestId
+      );
+      return res.status(errorResp.status).json(errorResp);
     }
 
     // Rate limiting check (async)
@@ -268,41 +432,65 @@ app.post("/chat", async (req: Request, res: Response) => {
       const resetTime = rateLimiter.getResetTime(userId);
       const retryAfter = Math.ceil((resetTime - Date.now()) / 1000);
       res.set("Retry-After", retryAfter.toString());
-      return res.status(429).json({
-        error: "Rate limit exceeded",
-        retryAfter,
-      });
+      const errorResp = createErrorResponse(
+        ErrorCode.RATE_LIMITED,
+        "Rate limit exceeded",
+        429,
+        requestId,
+        { retryAfter }
+      );
+      return res.status(429).json(errorResp);
     }
 
-    const {messages} = req.body as {
-      messages: Array<{role: "user" | "assistant" | "system"; content: string}>;
-    };
-
-    if (!messages || !Array.isArray(messages)) {
-      return res.status(400).json({error: "Invalid messages format"});
+    // Validate request body
+    const validation = validateChatRequest(req.body);
+    if (!validation.valid) {
+      const errorResp = createErrorResponse(
+        ErrorCode.INVALID_REQUEST,
+        validation.error || "Invalid request",
+        400,
+        requestId
+      );
+      return res.status(400).json(errorResp);
     }
 
-    // Validate messages array
-    if (messages.length === 0 || messages.length > 100) {
-      return res.status(400).json({error: "Invalid message count"});
-    }
+    const {messages, sessionId: reqSessionId} = validation.sanitized;
 
     // Get the latest user message
-    const latestUser = [...messages]
+    const latestUser = messages
+      .slice()
       .reverse()
-      .find((m) => m.role === "user")?.content || "";
+      .find((m: any) => m.role === "user")?.content || "";
 
-    if (!latestUser || latestUser.length === 0 || latestUser.length > 5000) {
-      return res.status(400).json({error: "Invalid user message"});
+    if (!latestUser) {
+      const errorResp = createErrorResponse(
+        ErrorCode.INVALID_REQUEST,
+        "No user message found",
+        400,
+        requestId
+      );
+      return res.status(400).json(errorResp);
     }
 
-    console.log("Chat request from user:", userId, "Message length:", latestUser.length);
+    sessionId = reqSessionId || "unknown";
+
+    logStructured("info", "chat_request_received", {
+      requestId,
+      uid: userId,
+      sessionId,
+      messageLength: latestUser.length,
+      messageCount: messages.length,
+    });
 
     // 1) Try to get chunks from Firestore first (with or without vector search)
     let contexts: Array<{text: string; memoId: string; chunkIndex: number}> = [];
 
     try {
-      console.log("Looking for chunks for user:", userId);
+      logStructured("info", "retriever_start", {
+        requestId,
+        uid: userId,
+        sessionId,
+      });
       // Query chunks directly from user's collection instead of using collectionGroup
       const coll = db.collection("users").doc(userId).collection("chunks");
 
@@ -342,82 +530,124 @@ app.post("/chat", async (req: Request, res: Response) => {
       }
 
       if (checkSnap.size > 0) {
-        // Try vector search first
+        // Try vector search first with circuit breaker
         try {
-          const endpoint = `projects/${process.env.GCLOUD_PROJECT}/locations/us-central1/publishers/google/models/gemini-embedding-001`;
-          console.log("Attempting vector embedding with endpoint:", endpoint);
+          await embeddingCircuitBreaker.execute(async () => {
+            const endpoint = `projects/${process.env.GCLOUD_PROJECT}/locations/us-central1/publishers/google/models/gemini-embedding-001`;
+            console.log("Attempting vector embedding with endpoint:", endpoint);
 
-          const [pred] = await withTimeout(
-            aiplatform.predict({
-              endpoint,
+            // Use REST API instead of gRPC for better reliability
+            const url = `https://us-central1-aiplatform.googleapis.com/v1/${endpoint}:predict`;
+
+            // Get access token from application default credentials
+            const {GoogleAuth} = require("google-auth-library");
+            const auth = new GoogleAuth({
+              scopes: ["https://www.googleapis.com/auth/cloud-platform"],
+            });
+            const client = await auth.getClient();
+            const token = await client.getAccessToken();
+
+            const requestBody = {
               instances: [{
                 content: latestUser,
                 task_type: "RETRIEVAL_QUERY",
-              } as any],
+              }],
               parameters: {
                 outputDimensionality: 1024,
                 autoTruncate: true,
-              } as any,
-            }),
-            EMBEDDING_TIMEOUT_MS,
-            "Embedding generation"
-          );
+              },
+            };
 
-          const queryVec = (pred?.predictions?.[0] as any)?.embeddings
-            ?.values as number[];
+            console.log("Calling embedding API via REST:", url);
 
-          if (!queryVec || !Array.isArray(queryVec) || queryVec.length === 0) {
-            console.warn("Failed to generate query embedding, using fallback");
-            throw new Error("No embedding generated");
-          }
-
-          console.log("Query embedded, vector dimension:", queryVec.length);
-
-          // Vector search in Firestore with MMR and deduplication
-          try {
-            // @ts-ignore - Vector types present in server SDK
-            const vectorQuery = coll
-              .where("memoDeleted", "==", false) // Filter out deleted memos
-              .findNearest({
-                vectorField: "embedding",
-                queryVector: queryVec,
-                limit: 20, // Get more candidates for MMR selection
-                distanceMeasure: "COSINE",
-              });
-
-            // @ts-ignore
-            const snap = await withTimeout(
-              vectorQuery.get(),
-              FIRESTORE_TIMEOUT_MS,
-              "Vector search"
+            const response = await withTimeout(
+              fetch(url, {
+                method: "POST",
+                headers: {
+                  "Authorization": `Bearer ${token.token}`,
+                  "Content-Type": "application/json",
+                },
+                body: JSON.stringify(requestBody),
+              }).then(async (res) => {
+                if (!res.ok) {
+                  const errorText = await res.text();
+                  throw new Error(`API error ${res.status}: ${errorText}`);
+                }
+                return res.json();
+              }),
+              EMBEDDING_TIMEOUT_MS,
+              "Embedding generation"
             );
 
-            // Collect candidates with embeddings for MMR
-            const candidates: Array<{text: string; embedding: number[]; memoId: string; chunkIndex: number}> = [];
-            // @ts-ignore
-            snap.forEach((doc: any) => {
-              const data = doc.data();
-              if (data.text && data.memoId && typeof data.chunkIndex === "number" && Array.isArray(data.embedding?.value)) {
-                candidates.push({
-                  text: String(data.text).substring(0, 2000),
-                  embedding: data.embedding.value,
-                  memoId: String(data.memoId),
-                  chunkIndex: data.chunkIndex,
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            const queryVec = ((response as any)?.predictions?.[0] as any)?.embeddings
+              ?.values as number[];
+
+            if (!queryVec || !Array.isArray(queryVec) || queryVec.length === 0) {
+              console.warn("Failed to generate query embedding, using fallback");
+              throw new Error("No embedding generated");
+            }
+
+            console.log("Query embedded, vector dimension:", queryVec.length);
+
+            // Vector search in Firestore with MMR and deduplication
+            try {
+              // @ts-ignore - Vector types present in server SDK
+              const vectorQuery = coll
+                .where("memoDeleted", "==", false) // Filter out deleted memos
+                .findNearest({
+                  vectorField: "embedding",
+                  queryVector: queryVec,
+                  limit: 20, // Get more candidates for MMR selection
+                  distanceMeasure: "COSINE",
                 });
-              }
-            });
 
-            // Apply MMR for diversity
-            const mmrSelected = selectByMMR(candidates, queryVec, 12, 0.5);
-            contexts.push(...mmrSelected);
+              // @ts-ignore
+              const snap = await withTimeout(
+                vectorQuery.get(),
+                FIRESTORE_TIMEOUT_MS,
+                "Vector search"
+              );
 
-            console.log("Vector search successful, found", contexts.length, "chunks after MMR");
-          } catch (vectorError: any) {
-            console.warn("Vector search failed:", vectorError.message);
-            throw vectorError;
-          }
+              // Collect candidates with embeddings for MMR
+              const candidates: Array<{text: string; embedding: number[]; memoId: string; chunkIndex: number}> = [];
+              // @ts-ignore
+              snap.forEach((doc: any) => {
+                const data = doc.data();
+                if (data.text && data.memoId && typeof data.chunkIndex === "number" && Array.isArray(data.embedding?.value)) {
+                  candidates.push({
+                    text: String(data.text).substring(0, 2000),
+                    embedding: data.embedding.value,
+                    memoId: String(data.memoId),
+                    chunkIndex: data.chunkIndex,
+                  });
+                }
+              });
+
+              // Apply MMR for diversity
+              const mmrSelected = selectByMMR(candidates, queryVec, 12, 0.5);
+              contexts.push(...mmrSelected);
+
+              logStructured("info", "retriever_vector_search_success", {
+                requestId,
+                uid: userId,
+                sessionId,
+                candidatesCount: candidates.length,
+                selectedCount: mmrSelected.length,
+              });
+            } catch (vectorError: any) {
+              console.warn("Vector search failed:", vectorError.message);
+              throw vectorError;
+            }
+          }, "embedding-service");
         } catch (embeddingError: any) {
           console.warn("Embedding/vector search failed, using hybrid keyword fallback:", embeddingError.message);
+          logStructured("warn", "retriever_fallback_to_keyword", {
+            requestId,
+            uid: userId,
+            sessionId,
+            reason: embeddingError.message,
+          });
 
           // Fallback: hybrid keyword search
           try {
@@ -446,6 +676,12 @@ app.post("/chat", async (req: Request, res: Response) => {
             console.log("Hybrid keyword search found", contexts.length, "chunks");
           } catch (fallbackError: any) {
             console.warn("Fallback search also failed:", fallbackError.message);
+            logStructured("error", "retriever_fallback_failed", {
+              requestId,
+              uid: userId,
+              sessionId,
+              reason: fallbackError.message,
+            });
           }
         }
       } else {
@@ -465,6 +701,9 @@ app.post("/chat", async (req: Request, res: Response) => {
     const contextBlocks = deduplicatedContexts
       .map((c) => `— [memo:${c.memoId} #${c.chunkIndex}] ${c.text}`)
       .join("\n");
+
+    // Summarize conversation history for context
+    const conversationContext = summarizeConversationHistory(messages);
 
     const system = `You are VoiceGPT, an AI assistant that helps users understand and explore their voice memos.
 Use the provided excerpts from the user's voice memo history to answer questions.
@@ -493,12 +732,21 @@ Always provide accurate citations for any information you reference.`;
     })}\n\n`);
 
     try {
+      logStructured("info", "model_stream_start", {
+        requestId,
+        uid: userId,
+        sessionId,
+        model: process.env.OPENAI_MODEL || "gpt-4o-mini",
+        contextChunks: contexts.length,
+      });
+
       const stream = await withTimeout(
         openai.chat.completions.create({
-          model: "gpt-4o-mini",
+          model: process.env.OPENAI_MODEL || "gpt-4o-mini",
           stream: true,
           messages: [
             {role: "system", content: system},
+            ...(conversationContext ? [{role: "user" as const, content: conversationContext}] : []),
             {
               role: "user",
               content: `Context from your voice memos:\n${contextBlocks}\n\nQuestion:\n${latestUser}`,
@@ -511,12 +759,14 @@ Always provide accurate citations for any information you reference.`;
 
       let lastKeepAlive = Date.now();
       const KEEP_ALIVE_INTERVAL = 15000; // 15 seconds
+      let deltaCount = 0;
 
       for await (const part of stream) {
         const delta = part.choices?.[0]?.delta?.content || "";
         if (delta) {
           res.write(`data: ${JSON.stringify({type: "delta", delta})}\n\n`);
           lastKeepAlive = Date.now();
+          deltaCount++;
         }
 
         // Send keep-alive comment if no data for 15 seconds
@@ -526,17 +776,36 @@ Always provide accurate citations for any information you reference.`;
         }
       }
 
+      logStructured("info", "model_stream_stop", {
+        requestId,
+        uid: userId,
+        sessionId,
+        deltaCount,
+      });
+
       res.write(`data: ${JSON.stringify({type: "done"})}\n\n`);
       res.end();
     } catch (streamError: any) {
-      console.error("Error during streaming:", streamError);
+      logStructured("error", "model_stream_error", {
+        requestId,
+        uid: userId,
+        sessionId,
+        error: streamError.message,
+        errorType: streamError.constructor.name,
+      });
       if (!res.writableEnded) {
         res.write(`data: ${JSON.stringify({type: "error", error: "Stream processing failed"})}\n\n`);
         res.end();
       }
     }
   } catch (error: any) {
-    console.error("Error in /chat:", error);
+    logStructured("error", "chat_request_error", {
+      requestId,
+      uid: userId,
+      sessionId,
+      error: error.message,
+      errorType: error.constructor.name,
+    });
     if (!streamStarted && !res.headersSent) {
       res.status(500).json({error: "Internal server error"});
     } else if (streamStarted && !res.writableEnded) {

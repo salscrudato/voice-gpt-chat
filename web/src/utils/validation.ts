@@ -29,11 +29,16 @@ export function validateAudioFile(file: Blob): ValidationResult {
     };
   }
 
-  if (!ALLOWED_TYPES.includes(file.type)) {
-    return {
-      valid: false,
-      error: `File type ${file.type} not supported`,
-    };
+  // Allow empty type (browser default) or check against allowed types
+  // Handle codec specifications like "audio/webm;codecs=opus"
+  if (file.type) {
+    const baseType = file.type.split(";")[0];
+    if (!ALLOWED_TYPES.includes(baseType)) {
+      return {
+        valid: false,
+        error: `File type ${file.type} not supported. Supported types: ${ALLOWED_TYPES.join(", ")}`,
+      };
+    }
   }
 
   return {valid: true};

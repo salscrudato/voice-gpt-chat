@@ -1,6 +1,6 @@
 import {useState} from "react";
 import {MdMic} from "react-icons/md";
-import {setUserName, getUserId} from "../utils/userManager";
+import {setUserName} from "../utils/userManager";
 import {validateUserName} from "../utils/validation";
 import "../styles/LandingPage.css";
 
@@ -27,10 +27,6 @@ export default function LandingPage({onNameSet}: LandingPageProps) {
     setError(null);
 
     try {
-      // Initialize user ID
-      const userId = getUserId();
-      console.log("User ID initialized:", userId);
-
       // Store name using user manager
       const success = setUserName(name);
       if (!success) {

@@ -7,6 +7,9 @@ import {MdMic, MdStop, MdBook, MdClose, MdDelete, MdCheckCircle, MdError} from "
 import {getUserUid} from "../utils/authManager";
 import {validateAudioFile} from "../utils/validation";
 import {generateMemoInsight} from "../services/insightService";
+import {analyzeAudioQuality, formatAudioMetrics, type AudioQualityMetrics} from "../utils/audioQuality";
+import {executeWithRetry, generateIdempotencyKey} from "../utils/requestManager";
+import {getNetworkManager} from "../utils/networkManager";
 import {Button, Card, Badge, Modal} from "./index";
 import "../styles/UploadRecorder.css";
 
@@ -33,9 +36,15 @@ export default function UploadRecorder({userName}: UploadRecorderProps) {
   const [memos, setMemos] = useState<MemoItem[]>([]);
   const [selectedMemo, setSelectedMemo] = useState<MemoItem | null>(null);
   const [loadingMemos, setLoadingMemos] = useState(false);
+  const [audioQuality, setAudioQuality] = useState<AudioQualityMetrics | null>(null);
+  const [recordingDuration, setRecordingDuration] = useState(0);
 
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<Blob[]>([]);
+  const audioContextRef = useRef<AudioContext | null>(null);
+  const analyzerRef = useRef<AnalyserNode | null>(null);
+  const recordingStartTimeRef = useRef<number>(0);
+  const qualityCheckIntervalRef = useRef<NodeJS.Timeout | null>(null);
 
   // Load memos from Firestore
   const loadMemos = () => {
@@ -88,14 +97,68 @@ export default function UploadRecorder({userName}: UploadRecorderProps) {
 
   const startRecording = async () => {
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({
+      // Request high-quality audio with professional settings
+      const constraints: MediaStreamConstraints = {
         audio: {
           echoCancellation: true,
           noiseSuppression: true,
           autoGainControl: true,
+          sampleRate: {ideal: 48000, min: 16000},
+          channelCount: {ideal: 1},
         },
-      });
-      const mediaRecorder = new MediaRecorder(stream, {mimeType: "audio/webm"});
+      };
+
+      const stream = await navigator.mediaDevices.getUserMedia(constraints);
+
+      // Log actual audio settings for debugging
+      const audioTrack = stream.getAudioTracks()[0];
+      if (audioTrack) {
+        const settings = audioTrack.getSettings?.();
+        console.log("Audio recording settings:", {
+          sampleRate: settings?.sampleRate,
+          channelCount: settings?.channelCount,
+          echoCancellation: settings?.echoCancellation,
+          noiseSuppression: settings?.noiseSuppression,
+          autoGainControl: settings?.autoGainControl,
+        });
+      }
+
+      // Setup audio context for quality monitoring
+      const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
+      audioContextRef.current = audioContext;
+      const source = audioContext.createMediaStreamSource(stream);
+      const analyzer = audioContext.createAnalyser();
+      analyzer.fftSize = 2048;
+      source.connect(analyzer);
+      analyzerRef.current = analyzer;
+
+      recordingStartTimeRef.current = Date.now();
+      setRecordingDuration(0);
+
+      // Feature-detect MIME type: prefer webm, fallback to mp4/m4a for Safari
+      let mimeType = "audio/webm";
+      let selectedMime = mimeType;
+
+      if (!MediaRecorder.isTypeSupported(mimeType)) {
+        // Try mp4 (Safari on iOS/macOS)
+        if (MediaRecorder.isTypeSupported("audio/mp4")) {
+          selectedMime = "audio/mp4";
+        } else if (MediaRecorder.isTypeSupported("audio/m4a")) {
+          selectedMime = "audio/m4a";
+        } else if (MediaRecorder.isTypeSupported("audio/wav")) {
+          selectedMime = "audio/wav";
+        } else if (MediaRecorder.isTypeSupported("audio/mp3")) {
+          selectedMime = "audio/mp3";
+        } else {
+          // Fallback to default (browser will choose)
+          selectedMime = "";
+        }
+      }
+
+      console.log("Selected MIME type:", selectedMime || "default");
+
+      // Use timeslice for better streaming and error recovery
+      const mediaRecorder = new MediaRecorder(stream, selectedMime ? {mimeType: selectedMime} : {});
 
       mediaRecorder.ondataavailable = (e) => {
         if (e.data.size > 0) {
@@ -107,14 +170,50 @@ export default function UploadRecorder({userName}: UploadRecorderProps) {
         console.error("MediaRecorder error:", e.error);
         setMessage({type: "error", text: `Recording error: ${e.error}`});
         setRecording(false);
+        stream.getTracks().forEach((track) => track.stop());
+        if (qualityCheckIntervalRef.current) {
+          clearInterval(qualityCheckIntervalRef.current);
+        }
       };
 
-      mediaRecorder.start();
+      mediaRecorder.start(1000);
       mediaRecorderRef.current = mediaRecorder;
       setRecording(true);
       setMessage(null);
+
+      // Monitor audio quality in real-time
+      if (analyzerRef.current) {
+        qualityCheckIntervalRef.current = setInterval(() => {
+          const analyzer = analyzerRef.current;
+          if (analyzer) {
+            const dataArray = new Uint8Array(analyzer.frequencyBinCount);
+            analyzer.getByteFrequencyData(dataArray);
+            const float32Data = new Float32Array(dataArray.length);
+            for (let i = 0; i < dataArray.length; i++) {
+              float32Data[i] = (dataArray[i] - 128) / 128;
+            }
+            const metrics = analyzeAudioQuality(float32Data, 48000);
+            setAudioQuality(metrics);
+          }
+          const elapsed = Math.floor((Date.now() - recordingStartTimeRef.current) / 1000);
+          setRecordingDuration(elapsed);
+        }, 500);
+      }
     } catch (error: any) {
-      setMessage({type: "error", text: error.message || "Failed to start recording"});
+      const errorMsg = error.message || "Failed to start recording";
+      console.error("Recording start error:", error);
+
+      // Provide specific error messages for common issues
+      let userMessage = errorMsg;
+      if (errorMsg.includes("NotAllowedError")) {
+        userMessage = "Microphone access denied. Please allow microphone access in your browser settings.";
+      } else if (errorMsg.includes("NotFoundError")) {
+        userMessage = "No microphone found. Please connect a microphone and try again.";
+      } else if (errorMsg.includes("NotReadableError")) {
+        userMessage = "Microphone is in use by another application. Please close other apps using the microphone.";
+      }
+
+      setMessage({type: "error", text: userMessage});
     }
   };
 
@@ -122,6 +221,18 @@ export default function UploadRecorder({userName}: UploadRecorderProps) {
     if (!mediaRecorderRef.current) return;
 
     const mediaRecorder = mediaRecorderRef.current;
+
+    // Clean up quality monitoring
+    if (qualityCheckIntervalRef.current) {
+      clearInterval(qualityCheckIntervalRef.current);
+      qualityCheckIntervalRef.current = null;
+    }
+
+    // Close audio context
+    if (audioContextRef.current) {
+      audioContextRef.current.close();
+      audioContextRef.current = null;
+    }
 
     console.log("Stopping recording. Chunks collected:", chunksRef.current.length);
 
@@ -138,8 +249,12 @@ export default function UploadRecorder({userName}: UploadRecorderProps) {
       mediaRecorder.stop();
     });
 
-    const blob = new Blob(chunksRef.current, {type: "audio/webm"});
-    console.log("Audio blob created. Size:", blob.size, "bytes");
+    // Determine MIME type from mediaRecorder
+    let mimeType = mediaRecorder.mimeType || "audio/webm";
+    // Normalize MIME type by removing codec specifications (e.g., "audio/webm;codecs=opus" -> "audio/webm")
+    const baseType = mimeType.split(";")[0];
+    const blob = new Blob(chunksRef.current, {type: baseType});
+    console.log("Audio blob created. Size:", blob.size, "bytes, MIME:", baseType);
     chunksRef.current = [];
     setRecording(false);
 
@@ -150,12 +265,12 @@ export default function UploadRecorder({userName}: UploadRecorderProps) {
   const uploadAudio = async (blob: Blob) => {
     setUploading(true);
     setProgress(0);
-    const abortController = new AbortController();
+    let uploadStartTime = Date.now();
 
     try {
       console.log("Starting audio upload. Blob size:", blob.size, "bytes, type:", blob.type);
 
-      // Validate audio file
+      // Validate audio file with detailed checks
       const validation = validateAudioFile(blob);
       if (!validation.valid) {
         console.error("Audio validation failed:", validation.error);
@@ -174,29 +289,63 @@ export default function UploadRecorder({userName}: UploadRecorderProps) {
         return;
       }
 
-      const memoId = crypto.randomUUID();
+      // Check network status
+      const networkManager = getNetworkManager();
+      const networkState = networkManager.getState();
+      if (!networkState.isOnline) {
+        setMessage({type: "error", text: "No internet connection. Please check your network."});
+        setUploading(false);
+        return;
+      }
 
-      // Upload audio to Firebase Storage with timeout
+      if (!networkManager.isGoodForUploads()) {
+        console.warn("Network quality is poor for uploads:", networkState);
+      }
+
+      const memoId = crypto.randomUUID();
+      const idempotencyKey = generateIdempotencyKey({uid, memoId, blobSize: blob.size});
+
+      // Determine file extension based on MIME type
+      let fileExt = "webm";
+      if (blob.type === "audio/mp4" || blob.type === "audio/m4a") {
+        fileExt = "m4a";
+      } else if (blob.type === "audio/wav") {
+        fileExt = "wav";
+      } else if (blob.type === "audio/mp3") {
+        fileExt = "mp3";
+      }
+
+      // Upload audio to Firebase Storage with retry logic
       setProgress(25);
-      const audioPath = `audio/${uid}/${memoId}.webm`;
+      const audioPath = `audio/${uid}/${memoId}.${fileExt}`;
       const audioRef = ref(storage, audioPath);
 
-      const uploadPromise = uploadBytes(audioRef, blob, {
-        customMetadata: {
-          userName: userName,
-          memoId: memoId,
+      // Use executeWithRetry for robust upload with deduplication
+      await executeWithRetry(
+        async () => {
+          return uploadBytes(audioRef, blob, {
+            customMetadata: {
+              userName: userName,
+              memoId: memoId,
+              uploadStartTime: uploadStartTime.toString(),
+              audioQuality: audioQuality ? audioQuality.qualityScore.toString() : "unknown",
+            },
+          });
         },
-      });
+        {
+          idempotencyKey,
+          timeout: 300000, // 5 minutes
+          retryConfig: {
+            maxAttempts: 3,
+            initialDelayMs: 1000,
+            maxDelayMs: 10000,
+            backoffMultiplier: 2,
+            jitterFactor: 0.1,
+          },
+        }
+      );
 
-      // Add timeout for upload
-      const uploadWithTimeout = Promise.race([
-        uploadPromise,
-        new Promise<never>((_, reject) =>
-          setTimeout(() => reject(new Error("Upload timeout after 5 minutes")), 300000)
-        ),
-      ]);
-
-      await uploadWithTimeout;
+      console.log("Upload successful");
 
       setProgress(50);
 
@@ -210,7 +359,7 @@ export default function UploadRecorder({userName}: UploadRecorderProps) {
         memoId: memoId,
         userName: userName,
         transcript: "", // Will be filled by Cloud Function
-        contentType: "audio/webm",
+        contentType: blob.type,
         audioSize: blob.size,
         storagePath: audioPath,
         createdAt: serverTimestamp(),
@@ -230,6 +379,8 @@ export default function UploadRecorder({userName}: UploadRecorderProps) {
       let lastStatusUpdate = 0;
       let cloudFunctionTriggered = false;
       let pollInterval = 1000; // Start with 1 second, increase with backoff
+      let consecutiveErrors = 0;
+      const maxConsecutiveErrors = 5;
 
       while (attempts < maxAttempts && !transcriptReceived && !transcriptionError) {
         try {
@@ -243,70 +394,87 @@ export default function UploadRecorder({userName}: UploadRecorderProps) {
 
           // Get the document directly by ID (memoId is now the document ID)
           const memoDocRef = doc(db, "users", uid, "memos", memoId);
-          const docSnapshot = await getDoc(memoDocRef);
 
-          if (docSnapshot.exists()) {
-            const memoData = docSnapshot.data();
+          try {
+            const docSnapshot = await getDoc(memoDocRef);
 
-            // Validate data structure
-            if (!memoData || typeof memoData !== "object") {
-              console.warn("Invalid memo data structure");
-              continue;
+            if (docSnapshot.exists()) {
+              const memoData = docSnapshot.data();
+              consecutiveErrors = 0; // Reset error counter on success
+
+              // Validate data structure
+              if (!memoData || typeof memoData !== "object") {
+                console.warn("Invalid memo data structure");
+                continue;
+              }
+
+              // Check if Cloud Function has been triggered
+              if (memoData.status === "transcribing" || memoData.status === "transcribed" || memoData.status === "error") {
+                cloudFunctionTriggered = true;
+              }
+
+              // Check for transcription error
+              if (memoData.status === "error") {
+                transcriptionError = true;
+                const errorMsg = memoData.errorMessage || "Unknown error";
+                const errorDetails = memoData.errorDetails ? ` (${memoData.errorDetails})` : "";
+                setMessage({
+                  type: "error",
+                  text: `Transcription failed: ${String(errorMsg).substring(0, 100)}${errorDetails}`,
+                });
+              }
+              // Check for successful transcription
+              else if (memoData.transcript && memoData.status === "transcribed") {
+                transcriptReceived = true;
+                setProgress(100);
+                const wordCount = memoData.wordCount || 0;
+                const confidence = Math.round((memoData.confidence || 0) * 100);
+                const qualityScore = memoData.qualityScore || 0;
+                setMessage({
+                  type: "success",
+                  text: `Memo transcribed successfully! (${wordCount} words, ${confidence}% confidence, quality: ${qualityScore}%)`,
+                });
+              }
+              // Update progress while transcribing
+              else if (memoData.status === "transcribing") {
+                // Gradually increase progress from 75% to 95% while transcribing
+                const progressIncrement = Math.min(20 / maxAttempts, 0.2);
+                lastProgressUpdate = Math.min(lastProgressUpdate + progressIncrement, 95);
+                setProgress(Math.round(lastProgressUpdate));
+
+                // Log status every 10 seconds
+                if (attempts - lastStatusUpdate >= 10) {
+                  console.log(`Transcription in progress... (${attempts}s elapsed, progress: ${Math.round(lastProgressUpdate)}%)`);
+                  lastStatusUpdate = attempts;
+                }
+              }
+            } else {
+              console.warn("Memo document not found yet");
             }
 
-            // Check if Cloud Function has been triggered
-            if (memoData.status === "transcribing" || memoData.status === "transcribed" || memoData.status === "error") {
-              cloudFunctionTriggered = true;
-            }
-
-            // Check for transcription error
-            if (memoData.status === "error") {
-              transcriptionError = true;
-              const errorMsg = memoData.errorMessage || "Unknown error";
+            // If Cloud Function hasn't been triggered after 30 seconds, warn user
+            if (attempts === 30 && !cloudFunctionTriggered) {
+              console.warn("Cloud Function may not have been triggered. Check Firebase logs.");
               setMessage({
                 type: "error",
-                text: `Transcription failed: ${String(errorMsg).substring(0, 100)}`,
+                text: "Upload processing is taking longer than expected. Cloud Function may not be deployed.",
               });
             }
-            // Check for successful transcription
-            else if (memoData.transcript && memoData.status === "transcribed") {
-              transcriptReceived = true;
-              setProgress(100);
-              const wordCount = memoData.wordCount || 0;
-              const confidence = Math.round((memoData.confidence || 0) * 100);
-              setMessage({
-                type: "success",
-                text: `Memo transcribed successfully! (${wordCount} words, ${confidence}% confidence)`,
-              });
-            }
-            // Update progress while transcribing
-            else if (memoData.status === "transcribing") {
-              // Gradually increase progress from 75% to 95% while transcribing
-              const progressIncrement = Math.min(20 / maxAttempts, 0.2);
-              lastProgressUpdate = Math.min(lastProgressUpdate + progressIncrement, 95);
-              setProgress(Math.round(lastProgressUpdate));
+          } catch (getDocError) {
+            consecutiveErrors++;
+            console.error(`Error fetching memo document (attempt ${consecutiveErrors}/${maxConsecutiveErrors}):`, getDocError);
 
-              // Log status every 10 seconds
-              if (attempts - lastStatusUpdate >= 10) {
-                console.log(`Transcription in progress... (${attempts}s elapsed, progress: ${Math.round(lastProgressUpdate)}%)`);
-                lastStatusUpdate = attempts;
-              }
+            if (consecutiveErrors >= maxConsecutiveErrors) {
+              throw new Error(`Failed to fetch memo status after ${maxConsecutiveErrors} consecutive attempts`);
             }
-          } else {
-            console.warn("Memo document not found yet");
           }
-
-          // If Cloud Function hasn't been triggered after 30 seconds, warn user
-          if (attempts === 30 && !cloudFunctionTriggered) {
-            console.warn("Cloud Function may not have been triggered. Check Firebase logs.");
-            setMessage({
-              type: "error",
-              text: "Upload processing is taking longer than expected. Cloud Function may not be deployed.",
-            });
-          }
-        } catch (pollError) {
+        } catch (pollError: any) {
           console.error("Error during polling:", pollError);
-          // Continue polling even if there's an error
+          transcriptionError = true;
+          setMessage({
+            type: "error",
+            text: `Polling error: ${pollError.message || "Unknown error"}. Please check the browser console for details.`,
+          });
         }
       }
 
@@ -392,11 +560,11 @@ export default function UploadRecorder({userName}: UploadRecorderProps) {
             <span style={{display: "inline-flex", alignItems: "center", marginRight: "8px"}}>
               <MdMic size={20} />
             </span>
-            {recording ? "Recording..." : "Start Recording"}
+            {recording ? "Recording..." : "Record"}
           </Button>
 
           <Button
-            variant="danger"
+            variant="success"
             size="md"
             onClick={stopRecording}
             disabled={!recording || uploading}
@@ -404,9 +572,28 @@ export default function UploadRecorder({userName}: UploadRecorderProps) {
             <span style={{display: "inline-flex", alignItems: "center", marginRight: "8px"}}>
               <MdStop size={20} />
             </span>
-            Stop & Upload
+            Finish
           </Button>
         </div>
+
+        {recording && audioQuality && (
+          <div style={{
+            marginTop: "16px",
+            padding: "12px",
+            backgroundColor: "#f5f5f5",
+            borderRadius: "8px",
+            fontSize: "12px",
+            fontFamily: "monospace",
+          }}>
+            <div style={{marginBottom: "8px", fontWeight: "bold"}}>
+              Recording: {recordingDuration}s | Quality: {audioQuality.qualityScore}% | Level: {audioQuality.audioLevel}
+            </div>
+            <div style={{fontSize: "11px", color: "#666"}}>
+              SNR: {audioQuality.signalToNoise.toFixed(1)}dB | Clipping: {audioQuality.clipping.toFixed(1)}% |
+              Silence: {audioQuality.silenceRatio.toFixed(1)}%
+            </div>
+          </div>
+        )}
 
         {uploading && (
           <div className="progress-container">

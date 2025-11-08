@@ -4,28 +4,35 @@ service firebase.storage {
   match /b/{bucket}/o {
     // Helper functions
     function isValidUserId(uid) {
-      return uid.matches('^user_[0-9a-f\\-]{36}$');
+      // Accept any non-empty uid (Firebase auth generates standard UUIDs)
+      return uid is string && uid.size() > 0;
     }
 
-    function isValidMemoId(memoId) {
-      return memoId.matches('^[0-9a-f\\-]{36}\\.(webm|mp3|wav|m4a)$');
+    function isValidAudioFile(memoId) {
+      // Accept UUID with or without extension
+      return memoId is string && memoId.size() > 0;
     }
 
     function isOwner(uid) {
       return request.auth != null && request.auth.uid == uid;
     }
 
-    // Audio uploads: allow uploads with strict validation
+    function isValidAudioType() {
+      // Check if content type starts with audio/ (handles audio/webm, audio/webm;codecs=opus, etc.)
+      return request.resource.contentType.matches('^audio/.*');
+    }
+
+    // Audio uploads: allow authenticated users to upload their own audio
     match /audio/{uid}/{memoId} {
       // Read: allow owner to read audio files
       allow read: if isValidUserId(uid) && isOwner(uid);
 
-      // Write: allow uploads with strict constraints
+      // Write: allow authenticated users to upload their own audio
       allow write: if isValidUserId(uid) &&
                       isOwner(uid) &&
-                      isValidMemoId(memoId) &&
+                      isValidAudioFile(memoId) &&
                       request.resource.size < 50 * 1024 * 1024 &&  // 50 MB limit
-                      request.resource.contentType.matches('audio/(webm|mp3|wav|m4a)');
+                      isValidAudioType();
 
       // Delete: allow owner to delete
       allow delete: if isValidUserId(uid) && isOwner(uid);

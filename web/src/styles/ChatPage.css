@@ -9,7 +9,7 @@
 .chat-header {
   background: linear-gradient(135deg, var(--color-bg-primary) 0%, var(--color-secondary-light) 100%);
   color: var(--color-text-primary);
-  padding: 1.25rem 2rem;
+  padding: 1.5rem 2.5rem;
   display: flex;
   justify-content: space-between;
   align-items: center;
@@ -36,11 +36,11 @@
 }
 
 .chat-header h1 {
-  font-size: 1.5rem;
+  font-size: 1.625rem;
   margin: 0;
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 0.75rem;
   font-weight: 800;
   letter-spacing: -0.3px;
   background: linear-gradient(135deg, var(--color-primary) 0%, var(--color-primary-light) 100%);
@@ -51,7 +51,7 @@
 }
 
 .chat-header h1:hover {
-  transform: translateY(-1px);
+  transform: translateY(-2px);
 }
 
 .chat-header h1 svg {
@@ -63,18 +63,18 @@
 .header-right {
   display: flex;
   align-items: center;
-  gap: 1.5rem;
+  gap: 2rem;
 }
 
 .user-info {
   display: flex;
   flex-direction: column;
   align-items: flex-end;
-  gap: 4px;
+  gap: 0.25rem;
 }
 
 .user-name {
-  font-size: 0.9375rem;
+  font-size: 1rem;
   font-weight: 700;
   color: var(--color-text-primary);
   letter-spacing: -0.3px;
@@ -88,8 +88,8 @@
 .clear-name-btn {
   background: var(--color-bg-secondary);
   color: var(--color-text-primary);
-  padding: 0.625rem 1.125rem;
-  border-radius: 0.875rem;
+  padding: 0.625rem 1.25rem;
+  border-radius: 1rem;
   border: 1.5px solid var(--color-border);
   cursor: pointer;
   transition: all var(--transition-base);
@@ -136,15 +136,15 @@
   border-bottom: 1px solid var(--color-border);
   background: var(--color-bg-primary);
   gap: 0;
-  padding: 0 2rem;
+  padding: 0 2.5rem;
 }
 
 .tab {
   flex: 1;
-  padding: 1rem 1.25rem;
+  padding: 1.125rem 1.5rem;
   background: none;
   border: none;
-  border-bottom: 2px solid transparent;
+  border-bottom: 3px solid transparent;
   color: var(--color-text-secondary);
   font-size: 0.9375rem;
   font-weight: 600;
@@ -161,12 +161,12 @@
 .tab::after {
   content: '';
   position: absolute;
-  bottom: -2px;
-  left: 10%;
-  right: 10%;
-  height: 2px;
+  bottom: -3px;
+  left: 15%;
+  right: 15%;
+  height: 3px;
   background: transparent;
-  border-radius: 1px;
+  border-radius: 1.5px;
   transition: all var(--transition-base);
 }
 
@@ -175,9 +175,9 @@
 }
 
 .tab:hover::after {
-  background: rgba(91, 91, 255, 0.3);
-  left: 5%;
-  right: 5%;
+  background: rgba(91, 91, 255, 0.4);
+  left: 10%;
+  right: 10%;
 }
 
 .tab.active {

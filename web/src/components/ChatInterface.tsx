@@ -161,144 +161,177 @@ export default function ChatInterface() {
       const payload = {messages: [...messages, userMessage]};
       let reader: ReadableStreamDefaultReader<Uint8Array> | null = null;
 
-      try {
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 120000); // 2 minute timeout
+      // Implement retry logic with exponential backoff
+      const maxRetries = 3;
+      let lastError: Error | null = null;
 
-        console.log("Sending chat request to:", CHAT_API_URL);
-
-        // Get ID token for authorization
-        let idToken: string;
+      for (let attempt = 0; attempt < maxRetries; attempt++) {
         try {
-          idToken = await getIdToken();
-        } catch (tokenErr) {
-          throw new Error("Failed to get authorization token");
-        }
+          const controller = new AbortController();
+          const timeoutId = setTimeout(() => controller.abort(), 120000); // 2 minute timeout
 
-        let response: Response;
-        try {
-          response = await fetch(CHAT_API_URL, {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              "Authorization": `Bearer ${idToken}`,
-            },
-            body: JSON.stringify(payload),
-            signal: controller.signal,
-          });
-        } catch (fetchError: any) {
+          console.log(`Sending chat request (attempt ${attempt + 1}/${maxRetries}) to:`, CHAT_API_URL);
+
+          // Get ID token for authorization
+          let idToken: string;
+          try {
+            idToken = await getIdToken();
+          } catch (tokenErr) {
+            throw new Error("Failed to get authorization token");
+          }
+
+          let response: Response;
+          try {
+            response = await fetch(CHAT_API_URL, {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+                "Authorization": `Bearer ${idToken}`,
+              },
+              body: JSON.stringify(payload),
+              signal: controller.signal,
+            });
+          } catch (fetchError: any) {
+            clearTimeout(timeoutId);
+            // Handle connection errors
+            if (fetchError.name === "AbortError") {
+              throw new Error("Chat API request timed out. The service may be overloaded.");
+            }
+            if (fetchError.message?.includes("Failed to fetch") || fetchError.message?.includes("ERR_CONNECTION_REFUSED")) {
+              throw new Error(
+                `Cannot connect to Chat API at ${CHAT_API_URL}. ` +
+                `Make sure the Chat API service is running. ` +
+                `Run: npm run dev in the services/chat-api directory.`
+              );
+            }
+            throw fetchError;
+          }
+
           clearTimeout(timeoutId);
-          // Handle connection errors
-          if (fetchError.name === "AbortError") {
-            throw new Error("Chat API request timed out. The service may be overloaded.");
+
+          if (!response.ok) {
+            const errorText = await response.text();
+            const statusCode = response.status;
+
+            // Don't retry on 4xx errors (except 429 rate limit)
+            if (statusCode >= 400 && statusCode < 500 && statusCode !== 429) {
+              throw new Error(`API error: ${statusCode} ${response.statusText} - ${errorText.substring(0, 100)}`);
+            }
+
+            // Retry on 5xx errors and 429 rate limit
+            if (statusCode >= 500 || statusCode === 429) {
+              lastError = new Error(`API error: ${statusCode} ${response.statusText}`);
+              if (attempt < maxRetries - 1) {
+                const backoffMs = Math.pow(2, attempt) * 1000; // 1s, 2s, 4s
+                console.log(`Retrying after ${backoffMs}ms...`);
+                await new Promise((resolve) => setTimeout(resolve, backoffMs));
+                continue;
+              }
+              throw lastError;
+            }
+
+            throw new Error(`API error: ${statusCode} ${response.statusText} - ${errorText.substring(0, 100)}`);
           }
-          if (fetchError.message?.includes("Failed to fetch") || fetchError.message?.includes("ERR_CONNECTION_REFUSED")) {
-            throw new Error(
-              `Cannot connect to Chat API at ${CHAT_API_URL}. ` +
-              `Make sure the Chat API service is running. ` +
-              `Run: npm run dev in the services/chat-api directory.`
-            );
+
+          if (!response.body) {
+            throw new Error("No response body from API");
           }
-          throw fetchError;
-        }
 
-        clearTimeout(timeoutId);
+          reader = response.body.getReader();
+          const decoder = new TextDecoder();
+          let assistantContent = "";
+          let citations: any[] = [];
+          let buffer = "";
 
-        if (!response.ok) {
-          const errorText = await response.text();
-          throw new Error(`API error: ${response.status} ${response.statusText} - ${errorText.substring(0, 100)}`);
-        }
+          const assistantMessage: ChatMessage = {role: "assistant", content: "", citations: [], timestamp: new Date()};
+          setMessages((prev) => [...prev, assistantMessage]);
 
-        if (!response.body) {
-          throw new Error("No response body from API");
-        }
+          try {
+            while (true) {
+              const {value, done} = await reader.read();
+              if (done) break;
 
-        reader = response.body.getReader();
-        const decoder = new TextDecoder();
-        let assistantContent = "";
-        let citations: any[] = [];
-        let buffer = "";
+              const text = decoder.decode(value, {stream: true});
+              buffer += text;
 
-        const assistantMessage: ChatMessage = {role: "assistant", content: "", citations: [], timestamp: new Date()};
-        setMessages((prev) => [...prev, assistantMessage]);
+              // Process complete lines
+              const lines = buffer.split("\n\n");
+              buffer = lines[lines.length - 1]; // Keep incomplete line in buffer
 
-        try {
-          while (true) {
-            const {value, done} = await reader.read();
-            if (done) break;
+              for (let i = 0; i < lines.length - 1; i++) {
+                const line = lines[i];
+                if (!line.startsWith("data:")) continue;
 
-            const text = decoder.decode(value, {stream: true});
-            buffer += text;
+                try {
+                  const jsonStr = line.slice(5).trim();
+                  if (!jsonStr) continue;
 
-            // Process complete lines
-            const lines = buffer.split("\n\n");
-            buffer = lines[lines.length - 1]; // Keep incomplete line in buffer
+                  const data = JSON.parse(jsonStr);
 
-            for (let i = 0; i < lines.length - 1; i++) {
-              const line = lines[i];
-              if (!line.startsWith("data:")) continue;
-
-              try {
-                const jsonStr = line.slice(5).trim();
-                if (!jsonStr) continue;
-
-                const data = JSON.parse(jsonStr);
-
-                if (data.type === "citations" && Array.isArray(data.citations)) {
-                  citations = data.citations;
-                } else if (data.type === "delta" && typeof data.delta === "string") {
-                  assistantContent += data.delta;
-                  setMessages((prev) => {
-                    const copy = [...prev];
-                    if (copy.length > 0) {
-                      copy[copy.length - 1] = {
-                        role: "assistant",
-                        content: assistantContent,
-                        citations,
-                        timestamp: new Date(),
-                      };
-                    }
-                    return copy;
-                  });
-                } else if (data.type === "done") {
-                  console.log("Chat stream completed successfully");
-                } else if (data.type === "error") {
-                  console.error("Stream error from API:", data.error);
-                  throw new Error(data.error || "Stream error");
+                  if (data.type === "citations" && Array.isArray(data.citations)) {
+                    citations = data.citations;
+                  } else if (data.type === "delta" && typeof data.delta === "string") {
+                    assistantContent += data.delta;
+                    setMessages((prev) => {
+                      const copy = [...prev];
+                      if (copy.length > 0) {
+                        copy[copy.length - 1] = {
+                          role: "assistant",
+                          content: assistantContent,
+                          citations,
+                          timestamp: new Date(),
+                        };
+                      }
+                      return copy;
+                    });
+                  } else if (data.type === "done") {
+                    console.log("Chat stream completed successfully");
+                  } else if (data.type === "error") {
+                    console.error("Stream error from API:", data.error);
+                    throw new Error(data.error || "Stream error");
+                  }
+                } catch (parseError) {
+                  console.warn("Failed to parse stream data:", parseError);
                 }
-              } catch (parseError) {
-                console.warn("Failed to parse stream data:", parseError);
               }
             }
+          } finally {
+            reader?.cancel();
           }
-        } finally {
-          reader?.cancel();
-        }
 
-        // Persist assistant message to session
-        if (currentSession && assistantContent) {
-          try {
-            await addMessageToSession(userId, currentSession.id, {
-              role: "assistant",
-              content: assistantContent,
-              citations,
-            });
-          } catch (err) {
-            console.error("Failed to persist message:", err);
+          // Persist assistant message to session
+          if (currentSession && assistantContent) {
+            try {
+              await addMessageToSession(userId, currentSession.id, {
+                role: "assistant",
+                content: assistantContent,
+                citations,
+              });
+            } catch (err) {
+              console.error("Failed to persist message:", err);
+            }
           }
-        }
-      } catch (apiError: any) {
-        // Clean up reader on error
-        if (reader) {
-          try {
-            reader.cancel();
-          } catch (e) {
-            // Ignore cancel errors
-          }
-        }
 
-        // Re-throw API errors - no mock fallback
-        throw apiError;
+          // Success - break out of retry loop
+          break;
+        } catch (attemptError: any) {
+          lastError = attemptError;
+          console.error(`Attempt ${attempt + 1} failed:`, attemptError.message);
+
+          // Clean up reader on error
+          if (reader) {
+            try {
+              reader.cancel();
+            } catch (e) {
+              // Ignore cancel errors
+            }
+          }
+
+          // If this was the last attempt, throw the error
+          if (attempt === maxRetries - 1) {
+            throw lastError || new Error("Failed to send message after all retries");
+          }
+        }
       }
     } catch (err: any) {
       const errorMsg = err.message || "Failed to send message";

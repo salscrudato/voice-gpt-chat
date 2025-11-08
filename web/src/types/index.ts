@@ -50,6 +50,9 @@ export interface TextChunk {
   endTime?: number;
   wordCount?: number;
   language?: string;
+  tokenCount?: number; // Token count for retriever budgeting
+  terms?: string[]; // Keywords for hybrid search fallback
+  memoDeleted?: boolean; // Denormalized flag for filtering deleted memos
 }
 
 export interface ChatMessage {

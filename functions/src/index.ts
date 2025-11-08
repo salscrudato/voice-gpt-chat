@@ -4,7 +4,6 @@ import {onDocumentWritten} from "firebase-functions/v2/firestore";
 import {setGlobalOptions} from "firebase-functions/v2";
 import {defineSecret} from "firebase-functions/params";
 import {v2 as speech} from "@google-cloud/speech";
-import {PredictionServiceClient} from "@google-cloud/aiplatform";
 import * as logger from "firebase-functions/logger";
 
 // Initialize Firebase Admin
@@ -22,9 +21,6 @@ setGlobalOptions({
 const OPENAI_API_KEY = defineSecret("OPENAI_API_KEY");
 
 // Initialize clients
-const aiplatform = new PredictionServiceClient({
-  apiEndpoint: "us-central1-aiplatform.googleapis.com",
-});
 const speechClient = new speech.SpeechClient();
 
 /**
@@ -193,14 +189,50 @@ export const onAudioUpload = onObjectFinalized(
       const memoIdWithExt = parts[2];
       memoId = memoIdWithExt.replace(/\.[^/.]+$/, "");
 
+      // Validate UID and memoId format
+      if (!uid || uid.length === 0 || !memoId || memoId.length === 0) {
+        logger.error("Invalid UID or memoId:", {uid, memoId});
+        return;
+      }
+
       // Extract userName from custom metadata
       userName = file.metadata?.["userName"] || "Unknown";
+
+      // Validate file size
+      const fileSizeBytes = file.size || 0;
+      const maxSizeBytes = 500 * 1024 * 1024; // 500 MB
+      const minSizeBytes = 1024; // 1 KB
+
+      if (fileSizeBytes < minSizeBytes) {
+        logger.error("Audio file too small:", {uid, memoId, fileSizeBytes});
+        throw new Error(`Audio file too small: ${fileSizeBytes} bytes`);
+      }
+
+      if (fileSizeBytes > maxSizeBytes) {
+        logger.error("Audio file too large:", {uid, memoId, fileSizeBytes});
+        throw new Error(`Audio file too large: ${fileSizeBytes} bytes (max: ${maxSizeBytes})`);
+      }
+
+      // Validate content type
+      const contentType = file.contentType || "";
+      const validAudioTypes = ["audio/webm", "audio/mp4", "audio/m4a", "audio/wav", "audio/mp3", "audio/mpeg"];
+      if (!validAudioTypes.some((type) => contentType.startsWith(type))) {
+        logger.error("Invalid audio content type:", {uid, memoId, contentType});
+        throw new Error(`Invalid audio content type: ${contentType}`);
+      }
 
       gcsUri = `gs://${file.bucket}/${file.name}`;
       const project = process.env.GCLOUD_PROJECT;
       const recognizer = `projects/${project}/locations/global/recognizers/_`;
 
-      logger.info("Transcribing audio:", {uid, memoId, userName, gcsUri});
+      logger.info("Transcribing audio:", {
+        uid,
+        memoId,
+        userName,
+        gcsUri,
+        fileSizeBytes,
+        contentType,
+      });
 
       // Update memo status to "transcribing"
       const docRef = admin
@@ -294,47 +326,86 @@ export const onAudioUpload = onObjectFinalized(
 
       // Log full response for debugging
       const respStr = JSON.stringify(resp) || "undefined";
+      const respKeys = Object.keys(resp);
       logger.info("Full Speech-to-Text response:", {
         uid,
         memoId,
-        responseKeys: Object.keys(resp).slice(0, 10),
-        responseStr: respStr.substring(0, 500),
+        responseKeys: respKeys.slice(0, 20),
+        responseStr: respStr.substring(0, 2000),
+        allKeys: respKeys,
       });
 
       // Log response structure for debugging
+      const firstResultKey = resp?.results ?
+        Object.keys(resp.results)[0] :
+        "none";
+      const resultsKeys = resp?.results ?
+        Object.keys(resp.results).slice(0, 10) :
+        [];
       logger.info("Speech-to-Text response structure:", {
         hasResults: !!resp?.results,
         resultsType: typeof resp?.results,
-        resultsKeys: resp?.results ? Object.keys(resp.results).slice(0, 5) : [],
+        resultsKeys: resultsKeys,
+        gcsUri: gcsUri,
+        firstResultKey: firstResultKey,
       });
 
       // Extract transcript from the correct response structure
-      // Response structure: response.results[gcsUri].transcript.results[0]
-      // .alternatives[0].transcript
+      // The response is an array where first element contains results
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      let fileResults = resp?.results?.[gcsUri];
+      let fileResults: any = null;
 
-      // If not found with full URI, try to find any results
-      if (!fileResults && resp?.results) {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const resultsArray = Object.values(resp.results) as any[];
-        if (resultsArray.length > 0) {
-          fileResults = resultsArray[0];
-          logger.info(
-            "Found results using first available key instead of gcsUri"
-          );
+      // Check if response is an array (common for batch operations)
+      if (Array.isArray(resp) && resp.length > 0) {
+        const firstElement = resp[0];
+        if (firstElement?.results && typeof firstElement.results === "object") {
+          // Try with full gcsUri as key
+          fileResults = firstElement.results[gcsUri];
+
+          // If not found, try first available result
+          if (!fileResults) {
+            const resultsArray = Object.values(
+              firstElement.results
+            ) as any[];
+            if (resultsArray.length > 0) {
+              fileResults = resultsArray[0];
+              logger.info("Using first available result key from array");
+            }
+          }
         }
       }
 
+      // If response is an object with results property
+      if (!fileResults && resp?.results &&
+          typeof resp.results === "object") {
+        // Try with full gcsUri as key
+        fileResults = resp.results[gcsUri];
+
+        // If not found, try first available result
+        if (!fileResults) {
+          const resultsArray = Object.values(resp.results) as any[];
+          if (resultsArray.length > 0) {
+            fileResults = resultsArray[0];
+            logger.info("Using first available result key from object");
+          }
+        }
+      }
+
+      // If still not found, check if response itself is the results
+      if (!fileResults && resp?.results === undefined &&
+          resp?.transcript !== undefined) {
+        fileResults = resp;
+        logger.info("Response is BatchRecognizeFileResult directly");
+      }
+
       if (!fileResults) {
-        // Try alternative response structure
-        const allResults = resp?.results;
-        const allResultsStr = allResults ?
-          JSON.stringify(allResults, null, 2).substring(0, 500) :
-          "undefined";
-        const msg = `No results found. Available: ${allResultsStr}`;
+        // Log detailed error info
+        const respStr2 = JSON.stringify(resp).substring(0, 500);
+        const msg = `No results found. Response: ${respStr2}`;
         logger.error(msg);
-        throw new Error(`No transcription results found for ${gcsUri}`);
+        const errMsg = `No transcription results found for ${gcsUri}. ` +
+          "Check Cloud Function logs for details.";
+        throw new Error(errMsg);
       }
 
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -458,7 +529,7 @@ export const onAudioUpload = onObjectFinalized(
         stack: errorStack,
       });
 
-      // Update memo document with error status
+      // Update memo document with detailed error status
       try {
         const docRef = admin
           .firestore()
@@ -468,10 +539,32 @@ export const onAudioUpload = onObjectFinalized(
           .doc(memoId);
 
         const errMsg = error instanceof Error ? error.message : "Unknown error";
+        const errorStack = error instanceof Error ? error.stack : undefined;
+        const errorType = error?.constructor?.name || "UnknownError";
+
+        // Classify error for better user feedback
+        let errorCategory = "UNKNOWN";
+        if (errMsg.includes("timeout")) {
+          errorCategory = "TIMEOUT";
+        } else if (errMsg.includes("too small") || errMsg.includes("too large")) {
+          errorCategory = "INVALID_FILE_SIZE";
+        } else if (errMsg.includes("content type")) {
+          errorCategory = "INVALID_CONTENT_TYPE";
+        } else if (errMsg.includes("permission") || errMsg.includes("denied")) {
+          errorCategory = "PERMISSION_ERROR";
+        } else if (errMsg.includes("quota") || errMsg.includes("rate limit")) {
+          errorCategory = "QUOTA_EXCEEDED";
+        } else if (errMsg.includes("network") || errMsg.includes("connection")) {
+          errorCategory = "NETWORK_ERROR";
+        }
+
         await docRef.set(
           {
             status: "error",
             errorMessage: errMsg,
+            errorType,
+            errorCategory,
+            errorDetails: errorStack?.substring(0, 500),
             errorAt: admin.firestore.FieldValue.serverTimestamp(),
           },
           {merge: true}
@@ -532,27 +625,77 @@ export const onTranscriptWrite = onDocumentWritten(
         logger.info("Embedding chunk:", {uid, memoId, chunkIndex: i});
 
         try {
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          const [result] = await retryWithBackoff(
-            () => aiplatform.predict({
-              endpoint: model,
-              instances: [{
-                content: ch,
-                task_type: "RETRIEVAL_DOCUMENT",
-                // eslint-disable-next-line @typescript-eslint/no-explicit-any
-              } as any],
-              parameters: {
-                outputDimensionality: 1024,
-                autoTruncate: true,
-                // eslint-disable-next-line @typescript-eslint/no-explicit-any
-              } as any,
-            }),
+          // Call the Vertex AI Embeddings API using REST
+          // This is more reliable than the gRPC client
+          let token = "";
+          try {
+            const cred = admin.credential.applicationDefault();
+            const accessToken = await cred.getAccessToken();
+            token = accessToken.access_token;
+            logger.info("Got access token", {uid, memoId, chunkIndex: i});
+          } catch (tokenError) {
+            logger.error("Failed to get access token", {
+              uid,
+              memoId,
+              chunkIndex: i,
+              error: tokenError,
+            });
+            throw tokenError;
+          }
+
+          const url =
+            `https://us-central1-aiplatform.googleapis.com/v1/${model}:predict`;
+
+          const requestBody = {
+            instances: [{
+              content: ch,
+              task_type: "RETRIEVAL_DOCUMENT",
+            }],
+            parameters: {
+              outputDimensionality: 1024,
+              autoTruncate: true,
+            },
+          };
+
+          logger.info("Calling embedding API via REST", {
+            uid,
+            memoId,
+            chunkIndex: i,
+            url,
+          });
+
+          const response = await retryWithBackoff(
+            async () => {
+              const res = await fetch(url, {
+                method: "POST",
+                headers: {
+                  "Authorization": `Bearer ${token}`,
+                  "Content-Type":
+                    "application/json",
+                },
+                body: JSON.stringify(requestBody),
+              });
+
+              if (!res.ok) {
+                const errorText = await res.text();
+                logger.error("Embedding API error response", {
+                  uid,
+                  memoId,
+                  chunkIndex: i,
+                  status: res.status,
+                  errorText: errorText.substring(0, 200),
+                });
+                throw new Error(`API error ${res.status}: ${errorText}`);
+              }
+
+              return res.json();
+            },
             2,
             500
           );
 
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          const embeddings = (result?.predictions?.[0] as any)?.embeddings;
+          const embeddings = (response?.predictions?.[0] as any)?.embeddings;
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           const values = embeddings?.values as number[];
 
@@ -685,17 +828,36 @@ export const deleteMemo = onCall(
       const storage = admin.storage();
       let deletedChunks = 0;
 
+      // Get memo doc first to retrieve storage path
+      const memoRef = db
+        .collection("users")
+        .doc(uid)
+        .collection("memos")
+        .doc(memoId);
+      const memoSnap = await memoRef.get();
+      const storagePath = memoSnap.data()?.storagePath;
+
       // 1) Delete Storage audio file
       try {
-        const audioPath = `audio/${uid}/${memoId}.webm`;
         const bucket = storage.bucket();
-        await bucket.file(audioPath).delete().catch(() => {
-          // File may not exist, that's ok
-          logger.warn(
-            "Audio file not found or already deleted:",
-            {uid, memoId, audioPath}
-          );
-        });
+        if (storagePath) {
+          // Use the stored path
+          await bucket.file(storagePath).delete().catch(() => {
+            logger.warn(
+              "Audio file not found or already deleted:",
+              {uid, memoId, storagePath}
+            );
+          });
+        } else {
+          // Fallback: try common extensions
+          const extensions = ["webm", "m4a", "mp4", "wav", "mp3"];
+          for (const ext of extensions) {
+            const audioPath = `audio/${uid}/${memoId}.${ext}`;
+            await bucket.file(audioPath).delete().catch(() => {
+              // File may not exist, that's ok
+            });
+          }
+        }
         logger.info("Storage audio deleted:", {uid, memoId});
       } catch (storageError) {
         logger.warn("Error deleting storage file:", storageError);
@@ -703,11 +865,6 @@ export const deleteMemo = onCall(
       }
 
       // 2) Delete Firestore memo document
-      const memoRef = db
-        .collection("users")
-        .doc(uid)
-        .collection("memos")
-        .doc(memoId);
       await memoRef.delete();
       logger.info("Memo document deleted:", {uid, memoId});
 
