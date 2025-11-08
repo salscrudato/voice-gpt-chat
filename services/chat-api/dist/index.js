@@ -19,13 +19,15 @@ dotenv_1.default.config({ path: ".env.local" });
 // Initialize Firebase Admin
 const firebaseApp = (0, app_1.initializeApp)({ credential: (0, app_1.applicationDefault)() });
 const auth = (0, auth_1.getAuth)(firebaseApp);
-// Initialize clients
+// Initialize clients with optimized settings
 const db = new firestore_1.Firestore({
     preferRest: false,
     maxRetries: 3,
+    projectId: process.env.GCLOUD_PROJECT,
 });
 const aiplatform = new aiplatform_1.PredictionServiceClient({
     apiEndpoint: "us-central1-aiplatform.googleapis.com",
+    projectId: process.env.GCLOUD_PROJECT,
 });
 const openai = new openai_1.default({
     apiKey: process.env.OPENAI_API_KEY,
@@ -38,6 +40,12 @@ const rateLimiter = new rateLimiter_1.default(db, 60000, 30);
 const FIRESTORE_TIMEOUT_MS = 10000;
 const EMBEDDING_TIMEOUT_MS = 15000;
 const OPENAI_TIMEOUT_MS = 60000;
+// Connection health tracking
+const connectionHealth = {
+    firestore: { lastCheck: 0, healthy: true, failureCount: 0 },
+    embedding: { lastCheck: 0, healthy: true, failureCount: 0 },
+    openai: { lastCheck: 0, healthy: true, failureCount: 0 },
+};
 // Circuit breaker for external services
 class CircuitBreaker {
     constructor() {

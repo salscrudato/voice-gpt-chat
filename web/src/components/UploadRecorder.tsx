@@ -10,6 +10,8 @@ import {generateMemoInsight} from "../services/insightService";
 import {analyzeAudioQuality, formatAudioMetrics, type AudioQualityMetrics} from "../utils/audioQuality";
 import {executeWithRetry, generateIdempotencyKey} from "../utils/requestManager";
 import {getNetworkManager} from "../utils/networkManager";
+import {getBestCodec, validateAudioBlob, getFileExtension, logCodecInfo} from "../utils/audioCodec";
+import {logError, logInfo} from "../utils/errorHandler";
 import {Button, Card, Badge, Modal} from "./index";
 import "../styles/UploadRecorder.css";
 
@@ -97,6 +99,9 @@ export default function UploadRecorder({userName}: UploadRecorderProps) {
 
   const startRecording = async () => {
     try {
+      // Log codec support for debugging
+      logCodecInfo();
+
       // Request high-quality audio with professional settings
       const constraints: MediaStreamConstraints = {
         audio: {
@@ -114,12 +119,16 @@ export default function UploadRecorder({userName}: UploadRecorderProps) {
       const audioTrack = stream.getAudioTracks()[0];
       if (audioTrack) {
         const settings = audioTrack.getSettings?.();
-        console.log("Audio recording settings:", {
-          sampleRate: settings?.sampleRate,
-          channelCount: settings?.channelCount,
-          echoCancellation: settings?.echoCancellation,
-          noiseSuppression: settings?.noiseSuppression,
-          autoGainControl: settings?.autoGainControl,
+        logInfo("Audio recording settings", {
+          component: "UploadRecorder",
+          action: "startRecording",
+          metadata: {
+            sampleRate: settings?.sampleRate,
+            channelCount: settings?.channelCount,
+            echoCancellation: settings?.echoCancellation,
+            noiseSuppression: settings?.noiseSuppression,
+            autoGainControl: settings?.autoGainControl,
+          },
         });
       }
 
@@ -135,27 +144,14 @@ export default function UploadRecorder({userName}: UploadRecorderProps) {
       recordingStartTimeRef.current = Date.now();
       setRecordingDuration(0);
 
-      // Feature-detect MIME type: prefer webm, fallback to mp4/m4a for Safari
-      let mimeType = "audio/webm";
-      let selectedMime = mimeType;
+      // Use best supported codec with automatic fallback
+      const bestCodec = getBestCodec();
+      const selectedMime = bestCodec?.mimeType || "";
 
-      if (!MediaRecorder.isTypeSupported(mimeType)) {
-        // Try mp4 (Safari on iOS/macOS)
-        if (MediaRecorder.isTypeSupported("audio/mp4")) {
-          selectedMime = "audio/mp4";
-        } else if (MediaRecorder.isTypeSupported("audio/m4a")) {
-          selectedMime = "audio/m4a";
-        } else if (MediaRecorder.isTypeSupported("audio/wav")) {
-          selectedMime = "audio/wav";
-        } else if (MediaRecorder.isTypeSupported("audio/mp3")) {
-          selectedMime = "audio/mp3";
-        } else {
-          // Fallback to default (browser will choose)
-          selectedMime = "";
-        }
-      }
-
-      console.log("Selected MIME type:", selectedMime || "default");
+      logInfo(`Selected audio codec: ${selectedMime || "browser default"}`, {
+        component: "UploadRecorder",
+        action: "startRecording",
+      });
 
       // Use timeslice for better streaming and error recovery
       const mediaRecorder = new MediaRecorder(stream, selectedMime ? {mimeType: selectedMime} : {});
@@ -268,18 +264,36 @@ export default function UploadRecorder({userName}: UploadRecorderProps) {
     let uploadStartTime = Date.now();
 
     try {
-      console.log("Starting audio upload. Blob size:", blob.size, "bytes, type:", blob.type);
+      logInfo(`Starting audio upload. Size: ${blob.size} bytes, type: ${blob.type}`, {
+        component: "UploadRecorder",
+        action: "uploadAudio",
+      });
 
-      // Validate audio file with detailed checks
+      // Validate audio blob with codec-aware checks
+      const blobValidation = validateAudioBlob(blob);
+      if (!blobValidation.valid) {
+        logError("Audio blob validation failed", new Error(blobValidation.error), {
+          component: "UploadRecorder",
+          action: "uploadAudio",
+        });
+        setMessage({type: "error", text: blobValidation.error || "Invalid audio file"});
+        setUploading(false);
+        return;
+      }
+
+      // Also validate with legacy validation for compatibility
       const validation = validateAudioFile(blob);
       if (!validation.valid) {
-        console.error("Audio validation failed:", validation.error);
+        logError("Audio file validation failed", new Error(validation.error), {
+          component: "UploadRecorder",
+          action: "uploadAudio",
+        });
         setMessage({type: "error", text: validation.error || "Invalid audio file"});
         setUploading(false);
         return;
       }
 
-      console.log("Audio validation passed");
+      logInfo("Audio validation passed", {component: "UploadRecorder", action: "uploadAudio"});
 
       // Get user ID
       const uid = getUserUid();
@@ -299,21 +313,18 @@ export default function UploadRecorder({userName}: UploadRecorderProps) {
       }
 
       if (!networkManager.isGoodForUploads()) {
-        console.warn("Network quality is poor for uploads:", networkState);
+        logInfo("Network quality is poor for uploads", {
+          component: "UploadRecorder",
+          action: "uploadAudio",
+          metadata: networkState,
+        });
       }
 
       const memoId = crypto.randomUUID();
       const idempotencyKey = generateIdempotencyKey({uid, memoId, blobSize: blob.size});
 
-      // Determine file extension based on MIME type
-      let fileExt = "webm";
-      if (blob.type === "audio/mp4" || blob.type === "audio/m4a") {
-        fileExt = "m4a";
-      } else if (blob.type === "audio/wav") {
-        fileExt = "wav";
-      } else if (blob.type === "audio/mp3") {
-        fileExt = "mp3";
-      }
+      // Determine file extension using codec-aware function
+      const fileExt = getFileExtension(blob.type);
 
       // Upload audio to Firebase Storage with retry logic
       setProgress(25);

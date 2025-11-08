@@ -64,7 +64,7 @@ function chunkText(s: string, targetLen = 1200, overlap = 200): string[] {
 }
 
 /**
- * Helper: Retry with exponential backoff
+ * Helper: Retry with exponential backoff and jitter
  * @param {Function} fn - The async function to retry
  * @param {number} maxAttempts - Maximum number of attempts
  * @param {number} initialDelayMs - Initial delay in milliseconds
@@ -82,8 +82,15 @@ async function retryWithBackoff<T>(
       return await fn();
     } catch (error) {
       lastError = error instanceof Error ? error : new Error(String(error));
+
+      // Check if error is retryable
+      const isRetryable = isRetryableError(lastError);
+      if (!isRetryable) {
+        throw lastError;
+      }
+
       if (attempt < maxAttempts - 1) {
-        const delayMs = initialDelayMs * Math.pow(2, attempt);
+        const delayMs = calculateBackoffDelay(attempt, initialDelayMs);
         const msg = `Attempt ${attempt + 1} failed, retrying in ${delayMs}ms:`;
         logger.warn(msg, lastError.message);
         await new Promise((resolve) => setTimeout(resolve, delayMs));
@@ -92,6 +99,40 @@ async function retryWithBackoff<T>(
   }
 
   throw lastError || new Error("Max retries exceeded");
+}
+
+/**
+ * Determine if an error is retryable
+ * @param {Error} error - The error to check
+ * @return {boolean} True if error should be retried
+ */
+function isRetryableError(error: Error): boolean {
+  const msg = error.message.toLowerCase();
+  // Don't retry validation errors
+  if (msg.includes("invalid") || msg.includes("too small") ||
+      msg.includes("too large")) {
+    return false;
+  }
+  // Retry network, timeout, and server errors
+  return msg.includes("network") || msg.includes("timeout") ||
+         msg.includes("500") || msg.includes("503") ||
+         msg.includes("unavailable");
+}
+
+/**
+ * Calculate exponential backoff delay with jitter
+ * @param {number} attempt - Current attempt number
+ * @param {number} initialDelayMs - Initial delay in milliseconds
+ * @return {number} Delay in milliseconds
+ */
+function calculateBackoffDelay(
+  attempt: number,
+  initialDelayMs: number
+): number {
+  const exponentialDelay = initialDelayMs * Math.pow(2, attempt);
+  const cappedDelay = Math.min(exponentialDelay, 30000); // Max 30 seconds
+  const jitter = cappedDelay * 0.1 * Math.random();
+  return Math.round(cappedDelay + jitter);
 }
 
 /**
@@ -126,6 +167,42 @@ function extractTerms(text: string, maxTerms = 20): string[] {
     .sort((a, b) => b[1] - a[1])
     .slice(0, maxTerms)
     .map(([term]) => term);
+}
+
+/**
+ * Calculate comprehensive quality score for transcription
+ * Considers confidence, word count, and content quality
+ * @param {string} transcript - The transcribed text
+ * @param {number} confidence - Confidence score from STT (0-1)
+ * @param {number} wordCount - Number of words in transcript
+ * @return {number} Quality score (0-100)
+ */
+function calculateQualityScore(
+  transcript: string,
+  confidence: number,
+  wordCount: number
+): number {
+  let score = Math.round(Math.max(0, Math.min(100, confidence * 100)));
+
+  // Adjust for word count - very short transcripts are lower quality
+  if (wordCount < 5) {
+    score = Math.max(0, score - 30);
+  } else if (wordCount < 20) {
+    score = Math.max(0, score - 15);
+  }
+
+  // Adjust for content diversity - check for repeated words
+  const words = transcript.toLowerCase().split(/\s+/);
+  if (words.length > 0) {
+    const uniqueWords = new Set(words).size;
+    const diversity = uniqueWords / words.length;
+    if (diversity < 0.3) {
+      score = Math.max(0, score - 20); // Penalize repetitive content
+    }
+  }
+
+  // Ensure score is in valid range
+  return Math.max(0, Math.min(100, score));
 }
 
 /**
@@ -472,22 +549,28 @@ export const onAudioUpload = onObjectFinalized(
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const words = (alternatives[0] as any)?.words || [];
 
-      logger.info("Transcription complete:", {
-        uid,
-        memoId,
-        transcriptLength: transcript.length,
-        wordCount: Array.isArray(words) ? words.length : 0,
-        confidence: alternatives[0]?.confidence || 0,
-      });
-
       // Calculate word count and quality metrics
       const wordCount = transcript
         .split(/\s+/)
         .filter((w: string) => w.length > 0).length;
       const confidence = alternatives[0]?.confidence || 0;
-      const qualityScore = Math.round(
-        Math.max(0, Math.min(100, confidence * 100))
+
+      // Enhanced quality scoring
+      const qualityScore = calculateQualityScore(
+        transcript,
+        confidence,
+        wordCount
       );
+
+      logger.info("Transcription complete:", {
+        uid,
+        memoId,
+        transcriptLength: transcript.length,
+        wordCount,
+        confidence,
+        qualityScore,
+        wordLevelCount: Array.isArray(words) ? words.length : 0,
+      });
 
       // Generate summary and extract terms
       const summary = generateSummary(transcript);

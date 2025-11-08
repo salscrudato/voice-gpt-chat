@@ -1,6 +1,9 @@
 /**
  * Request Manager - Handles deduplication, retry logic, and idempotency
+ * Prevents duplicate uploads and API calls, especially for network retries
  */
+
+import {logInfo, logWarning, logError} from "./errorHandler";
 
 export interface RetryConfig {
   maxAttempts: number;
@@ -14,6 +17,7 @@ export interface RequestOptions {
   idempotencyKey?: string;
   timeout?: number;
   retryConfig?: Partial<RetryConfig>;
+  onRetry?: (attempt: number, error: Error) => void;
 }
 
 const DEFAULT_RETRY_CONFIG: RetryConfig = {
@@ -30,6 +34,15 @@ const inFlightRequests = new Map<string, Promise<any>>();
 // Track request history for idempotency
 const requestHistory = new Map<string, { result: any; timestamp: number }>();
 const HISTORY_TTL_MS = 60000; // 1 minute
+
+// Track request metrics
+const requestMetrics = {
+  total: 0,
+  deduplicated: 0,
+  cached: 0,
+  retried: 0,
+  failed: 0,
+};
 
 /**
  * Generate idempotency key from request data
@@ -55,27 +68,42 @@ export async function executeWithRetry<T>(
   const idempotencyKey = options.idempotencyKey || generateIdempotencyKey({});
   const retryConfig = { ...DEFAULT_RETRY_CONFIG, ...options.retryConfig };
 
+  requestMetrics.total++;
+
   // Check if request is already in flight
   if (inFlightRequests.has(idempotencyKey)) {
-    console.log(`[RequestManager] Deduplicating request: ${idempotencyKey}`);
+    requestMetrics.deduplicated++;
+    logInfo(`Deduplicating request: ${idempotencyKey}`, {
+      component: "RequestManager",
+      action: "executeWithRetry",
+      metadata: {deduplicated: true},
+    });
     return inFlightRequests.get(idempotencyKey)!;
   }
 
   // Check request history for idempotency
   const cached = requestHistory.get(idempotencyKey);
   if (cached && Date.now() - cached.timestamp < HISTORY_TTL_MS) {
-    console.log(`[RequestManager] Returning cached result for: ${idempotencyKey}`);
+    requestMetrics.cached++;
+    logInfo(`Returning cached result for: ${idempotencyKey}`, {
+      component: "RequestManager",
+      action: "executeWithRetry",
+      metadata: {cached: true, age: Date.now() - cached.timestamp},
+    });
     return cached.result;
   }
 
   // Execute with retry
-  const promise = executeWithRetryInternal(fn, retryConfig, options.timeout);
+  const promise = executeWithRetryInternal(fn, retryConfig, options.timeout, options.onRetry);
   inFlightRequests.set(idempotencyKey, promise);
 
   try {
     const result = await promise;
     requestHistory.set(idempotencyKey, { result, timestamp: Date.now() });
     return result;
+  } catch (error) {
+    requestMetrics.failed++;
+    throw error;
   } finally {
     inFlightRequests.delete(idempotencyKey);
   }
@@ -87,7 +115,8 @@ export async function executeWithRetry<T>(
 async function executeWithRetryInternal<T>(
   fn: () => Promise<T>,
   config: RetryConfig,
-  timeout?: number
+  timeout?: number,
+  onRetry?: (attempt: number, error: Error) => void
 ): Promise<T> {
   let lastError: Error | null = null;
 
@@ -107,15 +136,27 @@ async function executeWithRetryInternal<T>(
       lastError = error instanceof Error ? error : new Error(String(error));
 
       if (attempt < config.maxAttempts - 1) {
+        requestMetrics.retried++;
         const delayMs = calculateBackoffDelay(attempt, config);
-        console.warn(
-          `[RequestManager] Attempt ${attempt + 1} failed, retrying in ${delayMs}ms:`,
-          lastError.message
+        logWarning(
+          `Request attempt ${attempt + 1} failed, retrying in ${delayMs}ms`,
+          lastError,
+          {
+            component: "RequestManager",
+            action: "executeWithRetryInternal",
+            metadata: {attempt: attempt + 1, maxAttempts: config.maxAttempts, delayMs},
+          }
         );
+        onRetry?.(attempt + 1, lastError);
         await new Promise((resolve) => setTimeout(resolve, delayMs));
       }
     }
   }
+
+  logError(`Request failed after ${config.maxAttempts} attempts`, lastError || undefined, {
+    component: "RequestManager",
+    action: "executeWithRetryInternal",
+  });
 
   throw lastError || new Error("Max retries exceeded");
 }
@@ -145,6 +186,18 @@ export function getRequestStats() {
   return {
     inFlightCount: inFlightRequests.size,
     cachedCount: requestHistory.size,
+    metrics: {...requestMetrics},
   };
+}
+
+/**
+ * Reset request metrics
+ */
+export function resetRequestMetrics(): void {
+  requestMetrics.total = 0;
+  requestMetrics.deduplicated = 0;
+  requestMetrics.cached = 0;
+  requestMetrics.retried = 0;
+  requestMetrics.failed = 0;
 }
 

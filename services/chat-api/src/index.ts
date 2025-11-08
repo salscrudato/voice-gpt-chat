@@ -17,14 +17,18 @@ dotenv.config({path: ".env.local"});
 const firebaseApp = initializeApp({credential: applicationDefault()});
 const auth = getAuth(firebaseApp);
 
-// Initialize clients
+// Initialize clients with optimized settings
 const db = new Firestore({
   preferRest: false,
   maxRetries: 3,
+  projectId: process.env.GCLOUD_PROJECT,
 });
+
 const aiplatform = new PredictionServiceClient({
   apiEndpoint: "us-central1-aiplatform.googleapis.com",
+  projectId: process.env.GCLOUD_PROJECT,
 });
+
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
   timeout: 30000, // 30 second timeout
@@ -38,6 +42,13 @@ const rateLimiter = new RateLimiter(db, 60000, 30);
 const FIRESTORE_TIMEOUT_MS = 10000;
 const EMBEDDING_TIMEOUT_MS = 15000;
 const OPENAI_TIMEOUT_MS = 60000;
+
+// Connection health tracking
+const connectionHealth = {
+  firestore: {lastCheck: 0, healthy: true, failureCount: 0},
+  embedding: {lastCheck: 0, healthy: true, failureCount: 0},
+  openai: {lastCheck: 0, healthy: true, failureCount: 0},
+};
 
 // Circuit breaker for external services
 class CircuitBreaker {
