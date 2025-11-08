@@ -8,7 +8,7 @@ import {getUserUid} from "../utils/authManager";
 import {validateAudioFile} from "../utils/validation";
 import {generateMemoInsight} from "../services/insightService";
 import {analyzeAudioQuality, formatAudioMetrics, type AudioQualityMetrics} from "../utils/audioQuality";
-import {executeWithRetry, generateIdempotencyKey} from "../utils/requestManager";
+import {executeWithRetry, generateIdempotencyKey} from "../utils/httpClient";
 import {getNetworkManager} from "../utils/networkManager";
 import {getBestCodec, validateAudioBlob, getFileExtension, logCodecInfo} from "../utils/audioCodec";
 import {logError, logInfo} from "../utils/errorHandler";
