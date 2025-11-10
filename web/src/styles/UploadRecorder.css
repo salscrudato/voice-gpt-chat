@@ -39,12 +39,12 @@
 }
 
 .recorder-card {
-  background: var(--color-bg-primary);
-  border-radius: 2rem;
-  padding: 2.5rem 2.25rem;
+  background: linear-gradient(135deg, var(--color-bg-primary) 0%, var(--color-secondary-light) 100%);
+  border-radius: 2.5rem;
+  padding: 2.75rem 2.5rem;
   max-width: 520px;
   width: 100%;
-  box-shadow: 0 8px 32px rgba(91, 91, 255, 0.08), 0 2px 8px rgba(91, 91, 255, 0.04);
+  box-shadow: 0 12px 48px rgba(91, 91, 255, 0.12), 0 4px 16px rgba(91, 91, 255, 0.06);
   border: 1.5px solid var(--color-border);
   margin-top: 1.5rem;
   margin-bottom: 1.5rem;
@@ -138,29 +138,31 @@
 
 .recorder-controls {
   display: flex;
-  gap: 0.875rem;
-  margin-bottom: 1.75rem;
+  gap: 1rem;
+  margin-bottom: 2rem;
   width: 100%;
+  flex-wrap: wrap;
 }
 
 .recorder-controls button {
   flex: 1;
-  padding: 1rem 1.25rem;
+  min-width: 140px;
+  padding: 1.125rem 1.5rem;
   font-size: 0.9375rem;
-  font-weight: 600;
-  border-radius: 1.125rem;
+  font-weight: 700;
+  border-radius: 1.25rem;
   border: none;
   cursor: pointer;
   transition: all var(--transition-base);
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 0.5rem;
+  gap: 0.625rem;
   letter-spacing: -0.2px;
   position: relative;
   overflow: hidden;
-  min-height: 48px;
-  box-shadow: 0 4px 12px rgba(91, 91, 255, 0.15), 0 1px 3px rgba(91, 91, 255, 0.08);
+  min-height: 52px;
+  box-shadow: 0 6px 20px rgba(91, 91, 255, 0.15), 0 2px 6px rgba(91, 91, 255, 0.08);
   white-space: nowrap;
   touch-action: manipulation;
 }
@@ -168,7 +170,7 @@
 .btn-primary {
   background: linear-gradient(135deg, var(--color-primary) 0%, var(--color-primary-dark) 100%);
   color: white;
-  box-shadow: 0 6px 20px rgba(91, 91, 255, 0.25), 0 2px 4px rgba(91, 91, 255, 0.1);
+  box-shadow: 0 8px 24px rgba(91, 91, 255, 0.3), 0 2px 6px rgba(91, 91, 255, 0.12);
   animation: slideInUp 0.6s cubic-bezier(0.34, 1.56, 0.64, 1) 0.1s both;
 }
 
@@ -179,7 +181,7 @@
   left: -100%;
   width: 100%;
   height: 100%;
-  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.3), transparent);
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.35), transparent);
   transition: left 0.5s ease-out;
 }
 
@@ -191,15 +193,15 @@
   width: 0;
   height: 0;
   border-radius: 50%;
-  background: rgba(255, 255, 255, 0.25);
+  background: rgba(255, 255, 255, 0.3);
   transform: translate(-50%, -50%);
   transition: width 0.6s, height 0.6s;
 }
 
 .btn-primary:hover:not(:disabled) {
   background: linear-gradient(135deg, var(--color-primary-dark) 0%, var(--color-primary-darker) 100%);
-  transform: translateY(-4px);
-  box-shadow: 0 14px 40px rgba(91, 91, 255, 0.4), 0 4px 8px rgba(91, 91, 255, 0.12);
+  transform: translateY(-6px);
+  box-shadow: 0 16px 48px rgba(91, 91, 255, 0.45), 0 6px 12px rgba(91, 91, 255, 0.15);
 }
 
 .btn-primary:hover:not(:disabled)::before {
@@ -207,13 +209,13 @@
 }
 
 .btn-primary:hover:not(:disabled)::after {
-  width: 220px;
-  height: 220px;
+  width: 240px;
+  height: 240px;
 }
 
 .btn-primary:active:not(:disabled) {
   transform: translateY(-2px);
-  box-shadow: 0 8px 20px rgba(91, 91, 255, 0.3), 0 2px 4px rgba(91, 91, 255, 0.1);
+  box-shadow: 0 10px 28px rgba(91, 91, 255, 0.35), 0 3px 6px rgba(91, 91, 255, 0.12);
 }
 
 .btn-danger {
@@ -277,12 +279,12 @@ button:disabled {
 
 .progress-bar {
   width: 100%;
-  height: 12px;
+  height: 14px;
   background: var(--color-border);
-  border-radius: 10px;
+  border-radius: 12px;
   overflow: hidden;
-  margin-bottom: 0.75rem;
-  box-shadow: inset 0 2px 4px rgba(91, 91, 255, 0.08), inset 0 -1px 2px rgba(91, 91, 255, 0.04);
+  margin-bottom: 1rem;
+  box-shadow: inset 0 2px 6px rgba(91, 91, 255, 0.1), inset 0 -1px 3px rgba(91, 91, 255, 0.05);
   position: relative;
   border: 1px solid var(--color-border-light);
 }
@@ -291,8 +293,8 @@ button:disabled {
   height: 100%;
   background: linear-gradient(90deg, var(--color-primary), var(--color-primary-light), var(--color-primary));
   transition: width var(--transition-base);
-  border-radius: 10px;
-  box-shadow: 0 0 24px rgba(91, 91, 255, 0.7), inset 0 1px 2px rgba(255, 255, 255, 0.3);
+  border-radius: 12px;
+  box-shadow: 0 0 28px rgba(91, 91, 255, 0.8), inset 0 1px 3px rgba(255, 255, 255, 0.4);
   position: relative;
 }
 
@@ -303,7 +305,7 @@ button:disabled {
   left: 0;
   right: 0;
   bottom: 0;
-  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.7), transparent);
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.8), transparent);
   animation: shimmer 2.5s infinite;
 }
 
@@ -317,32 +319,47 @@ button:disabled {
 
 .info {
   background: linear-gradient(135deg, var(--color-primary-ultra-light) 0%, var(--color-bg-secondary) 100%);
-  padding: 1rem 1.125rem;
-  border-radius: 1rem;
-  border-left: 4px solid var(--color-primary);
-  box-shadow: var(--shadow-sm);
-  margin-bottom: 1.5rem;
+  padding: 1.125rem 1.375rem;
+  border-radius: 1.125rem;
+  border-left: 5px solid var(--color-primary);
+  box-shadow: 0 4px 12px rgba(91, 91, 255, 0.08), 0 1px 3px rgba(91, 91, 255, 0.03);
+  margin-bottom: 1.75rem;
+  position: relative;
+  overflow: hidden;
+}
+
+.info::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 100px;
+  height: 100px;
+  background: radial-gradient(circle, rgba(91, 91, 255, 0.1) 0%, transparent 70%);
+  pointer-events: none;
 }
 
 .info p {
   color: var(--color-text-secondary);
   font-size: 0.875rem;
-  line-height: 1.6;
+  line-height: 1.65;
   margin: 0;
   font-weight: 500;
   word-break: break-word;
+  position: relative;
+  z-index: 1;
 }
 
 /* Memo History Styles */
 .memo-history {
   width: 100%;
   max-width: 520px;
-  margin-top: 1.5rem;
-  margin-bottom: 2rem;
-  background: var(--color-bg-primary);
-  border-radius: 2rem;
-  padding: 1.75rem;
-  box-shadow: 0 8px 32px rgba(91, 91, 255, 0.08), 0 2px 8px rgba(91, 91, 255, 0.04);
+  margin-top: 2rem;
+  margin-bottom: 2.5rem;
+  background: linear-gradient(135deg, var(--color-bg-primary) 0%, var(--color-secondary-light) 100%);
+  border-radius: 2.5rem;
+  padding: 2rem;
+  box-shadow: 0 12px 48px rgba(91, 91, 255, 0.12), 0 4px 16px rgba(91, 91, 255, 0.06);
   border: 1.5px solid var(--color-border);
   transition: all var(--transition-base);
   animation: slideInUp 0.6s cubic-bezier(0.34, 1.56, 0.64, 1) 0.2s both;
@@ -449,15 +466,15 @@ button:disabled {
 }
 
 .memo-item {
-  padding: 1.125rem 1.25rem;
+  padding: 1.25rem 1.375rem;
   background: var(--color-bg-secondary);
   border: 1.5px solid var(--color-border);
-  border-radius: 1rem;
+  border-radius: 1.25rem;
   cursor: pointer;
   transition: all var(--transition-base);
   display: flex;
   flex-direction: column;
-  box-shadow: 0 2px 8px rgba(91, 91, 255, 0.06), 0 1px 2px rgba(91, 91, 255, 0.02);
+  box-shadow: 0 4px 12px rgba(91, 91, 255, 0.08), 0 1px 3px rgba(91, 91, 255, 0.03);
   animation: slideInUp 0.4s cubic-bezier(0.34, 1.56, 0.64, 1);
   position: relative;
   overflow: hidden;
@@ -471,7 +488,7 @@ button:disabled {
   left: -100%;
   width: 100%;
   height: 100%;
-  background: linear-gradient(90deg, transparent, rgba(91, 91, 255, 0.15), transparent);
+  background: linear-gradient(90deg, transparent, rgba(91, 91, 255, 0.2), transparent);
   transition: left 0.5s ease-out;
 }
 
@@ -482,7 +499,7 @@ button:disabled {
   left: 0;
   right: 0;
   bottom: 0;
-  background: linear-gradient(135deg, rgba(91, 91, 255, 0.03) 0%, transparent 100%);
+  background: linear-gradient(135deg, rgba(91, 91, 255, 0.04) 0%, transparent 100%);
   opacity: 0;
   transition: opacity var(--transition-base);
   pointer-events: none;
@@ -499,8 +516,8 @@ button:disabled {
 .memo-item:hover {
   background: var(--color-bg-hover);
   border-color: var(--color-primary);
-  transform: translateY(-4px);
-  box-shadow: 0 12px 32px rgba(91, 91, 255, 0.15), 0 2px 4px rgba(91, 91, 255, 0.04);
+  transform: translateY(-6px);
+  box-shadow: 0 16px 40px rgba(91, 91, 255, 0.18), 0 4px 8px rgba(91, 91, 255, 0.06);
 }
 
 .memo-item-header {
