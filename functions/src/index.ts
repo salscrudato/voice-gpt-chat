@@ -417,28 +417,44 @@ export const onAudioUpload = onObjectFinalized(
         allKeys: respKeys,
       });
 
-      // Log response structure for debugging
-      const firstResultKey = resp?.results ?
-        Object.keys(resp.results)[0] :
-        "none";
-      const resultsKeys = resp?.results ?
-        Object.keys(resp.results).slice(0, 10) :
-        [];
-      logger.info("Speech-to-Text response structure:", {
-        hasResults: !!resp?.results,
-        resultsType: typeof resp?.results,
-        resultsKeys: resultsKeys,
-        gcsUri: gcsUri,
-        firstResultKey: firstResultKey,
-      });
-
       // Extract transcript from the correct response structure
-      // The response is an array where first element contains results
+      // Speech-to-Text v2 batchRecognize returns:
+      // { results: { [gcsUri]: { transcript: { results: [...] } } } }
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       let fileResults: any = null;
 
-      // Check if response is an array (common for batch operations)
-      if (Array.isArray(resp) && resp.length > 0) {
+      // Try to extract results from the response
+      // First, check if response has a results property (most common case)
+      if (resp?.results && typeof resp.results === "object") {
+        logger.info("Response has results property", {
+          uid,
+          memoId,
+          resultsKeys: Object.keys(resp.results).slice(0, 10),
+        });
+
+        // Try with full gcsUri as key
+        fileResults = resp.results[gcsUri];
+
+        // If not found, try first available result
+        if (!fileResults) {
+          const resultsArray = Object.values(
+            resp.results
+          ) as Record<string, unknown>[];
+          if (resultsArray.length > 0) {
+            fileResults = resultsArray[0];
+            logger.info("Using first available result from results object");
+          }
+        }
+      }
+
+      // If response is an array (alternative structure)
+      if (!fileResults && Array.isArray(resp) && resp.length > 0) {
+        logger.info("Response is an array, checking first element", {
+          uid,
+          memoId,
+          arrayLength: resp.length,
+        });
+
         const firstElement = resp[0];
         if (firstElement?.results && typeof firstElement.results === "object") {
           // Try with full gcsUri as key
@@ -451,46 +467,35 @@ export const onAudioUpload = onObjectFinalized(
             ) as Record<string, unknown>[];
             if (resultsArray.length > 0) {
               fileResults = resultsArray[0];
-              logger.info("Using first available result key from array");
+              logger.info("Using first available result from array element");
             }
           }
         }
       }
 
-      // If response is an object with results property
-      if (!fileResults && resp?.results &&
-          typeof resp.results === "object") {
-        // Try with full gcsUri as key
-        fileResults = resp.results[gcsUri];
-
-        // If not found, try first available result
-        if (!fileResults) {
-          const resultsArray = Object.values(
-            resp.results
-          ) as Record<string, unknown>[];
-          if (resultsArray.length > 0) {
-            fileResults = resultsArray[0];
-            logger.info("Using first available result key from object");
-          }
-        }
-      }
-
-      // If still not found, check if response itself is the results
-      if (!fileResults && resp?.results === undefined &&
-          resp?.transcript !== undefined) {
+      // If still not found, check if response itself is the file result
+      if (!fileResults && resp?.transcript !== undefined) {
         fileResults = resp;
         logger.info("Response is BatchRecognizeFileResult directly");
       }
 
       if (!fileResults) {
         // Log detailed error info
-        const respStr2 = JSON.stringify(resp).substring(0, 500);
+        const respStr2 = JSON.stringify(resp).substring(0, 1000);
         const msg = `No results found. Response: ${respStr2}`;
         logger.error(msg);
         const errMsg = `No transcription results found for ${gcsUri}. ` +
           "Check Cloud Function logs for details.";
         throw new Error(errMsg);
       }
+
+      logger.info("FileResults extracted successfully", {
+        uid,
+        memoId,
+        hasTranscript: !!fileResults?.transcript,
+        hasResults: !!fileResults?.results,
+        fileResultsKeys: Object.keys(fileResults).slice(0, 10),
+      });
 
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       let transcriptResults = (fileResults as any)?.transcript?.results;
@@ -501,10 +506,16 @@ export const onAudioUpload = onObjectFinalized(
         transcriptResults = (fileResults as any)?.results;
       }
 
+      // If still not found, check if fileResults itself is the results array
+      if (!transcriptResults && Array.isArray(fileResults)) {
+        transcriptResults = fileResults;
+        logger.info("FileResults is the results array directly");
+      }
+
       if (!transcriptResults || transcriptResults.length === 0) {
         const fileResultsJson = JSON.stringify(fileResults, null, 2) ||
           "undefined";
-        const fileResultsStr = fileResultsJson.substring(0, 500);
+        const fileResultsStr = fileResultsJson.substring(0, 1000);
         const msg = `No transcript results. FileResults: ${fileResultsStr}`;
         logger.error(msg);
         throw new Error(`No transcript results found for ${gcsUri}`);
