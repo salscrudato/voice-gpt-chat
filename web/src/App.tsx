@@ -2,7 +2,6 @@ import {useEffect, useState} from "react";
 import "./styles/tailwind.css";
 import "./styles/design-system.css";
 import "./styles/responsive.css";
-import "./App.css";
 import LandingPage from "./pages/LandingPage";
 import ChatPage from "./pages/ChatPage";
 import {initializeTheme} from "./utils/themeManager";

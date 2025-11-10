@@ -83,22 +83,54 @@
   }
 
   .recorder-container {
-    padding: 1.25rem;
+    padding: 1rem;
   }
 
   .recorder-card {
-    padding: 2.25rem 1.5rem;
+    padding: 1.75rem 1.25rem;
     border-radius: 1.5rem;
+    margin-top: 1rem;
+    margin-bottom: 1rem;
   }
 
   .recorder-card h2 {
-    font-size: 1.75rem;
+    font-size: 1.5rem;
+    margin-bottom: 1.25rem;
+  }
+
+  .recorder-controls {
+    gap: 0.75rem;
+    margin-bottom: 1.5rem;
+  }
+
+  .recorder-controls button {
+    padding: 0.875rem 1rem;
+    font-size: 0.875rem;
+    min-height: 44px;
+  }
+
+  .info {
+    padding: 0.875rem 1rem;
     margin-bottom: 1.25rem;
   }
 
   .memo-history {
     max-width: 100%;
-    padding: 1.25rem;
+    padding: 1.5rem;
+    margin-top: 1rem;
+    margin-bottom: 1.5rem;
+  }
+
+  .memo-history h3 {
+    font-size: 1rem;
+  }
+
+  .memos-list {
+    max-height: 300px;
+  }
+
+  .memo-item {
+    padding: 1rem 1.125rem;
   }
 
   .modal {
@@ -241,6 +273,60 @@
     max-width: 95%;
     padding: 0.5rem 0.625rem;
     font-size: 0.75rem;
+  }
+
+  .recorder-card {
+    padding: 1.5rem 1rem;
+    border-radius: 1.25rem;
+  }
+
+  .recorder-card h2 {
+    font-size: 1.375rem;
+    margin-bottom: 1rem;
+  }
+
+  .recorder-controls {
+    gap: 0.625rem;
+    margin-bottom: 1.25rem;
+  }
+
+  .recorder-controls button {
+    padding: 0.75rem 0.875rem;
+    font-size: 0.8125rem;
+    min-height: 42px;
+  }
+
+  .info {
+    padding: 0.75rem 0.875rem;
+    font-size: 0.75rem;
+  }
+
+  .memo-history {
+    padding: 1.25rem;
+    margin-top: 0.75rem;
+    margin-bottom: 1rem;
+  }
+
+  .memo-history h3 {
+    font-size: 0.9375rem;
+  }
+
+  .memos-list {
+    max-height: 250px;
+    gap: 0.5rem;
+  }
+
+  .memo-item {
+    padding: 0.875rem 1rem;
+  }
+
+  .memo-date {
+    font-size: 0.8125rem;
+  }
+
+  .memo-preview {
+    font-size: 0.75rem;
+    margin: 0.5rem 0;
   }
 }
 
